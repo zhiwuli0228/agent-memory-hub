@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**🖥️ ADR-0010 Web 管理台落地（2026-11-15 21:25，e5d5d96）——审批体验债务清偿**：用户否定 CLI 审批并给出通用性要求（"独立的 web 界面……避免 opencode/claude code CLI 无法在界面上操作"）→ ADR-0010：**独立 Web 管理台为第一公民**（所有宿主共用），宿主内嵌（DSH client slot）降为可选复用层。实现：server.ts 加管理路由（entries 列表/详情、deprecate/hardDelete 走写锁+panel 账本、ledger/journal 审计视图）；panel.ts 升级三 tab 控制台（收件箱/记忆库/审计，记忆库含 BM25 检索+详情+废弃+双确认硬删除，零依赖单文件）；`memhub serve --port 0` 真实端口回显修复（listening 事件）。**99 测试全绿**（core 92 + host 7），真机冒烟通过（85 条目/1175 账本事件/三 tab 全渲染）。**你的操作**：`memhub serve --root 'E:\009workspace\dsh\dsh-plugin-dev'` → 浏览器打开打印的 URL → 点按钮审批/管理。
+
 **🏆 独占模式切换完成（2026-11-15 20:55）——desktop profile 主记忆引擎 = agent-memory-hub**：用户关闭 dsh-memory-hub 0.8.1 并重启宿主后，薄包**自动回收工具名**（无撞名 → suffix 不触发 → 8/8 工具原名注册，`__amh` 零残留）——冲突策略自适应得到真机验证。子 agent 10 步全链路验收 **10/10 ok**：读路径（status/search×2/preflight/get×2，L0 契约与 legacy frontmatter 保留全符合）、写路径（propose→PRO-000112 进 pending/）、**人通道闭环**（`memhub inbox list` CLI 可见提案——不代审批）、簿记（cite/dejavu check）。旧引擎零残留。pending 等审批：PRO-000111（0.2.x 工具契约教训）+ PRO-000112（引擎切换决策）——同目录同格式，新旧引擎的 pending 互相兼容（"knowledge 格式承诺不变"的实证）。
 
 **🎉 Step 6c 调用级端到端全部通过（2026-11-15 20:20）——真机测试闭环**：三轮"真机失败 → 根因 → 双层修复 → 守护测试"完成，最终子 agent 三测 3/3 ok（get 默认/full 双入参 + KNO-000001 交叉验证，frontmatter 完整、body 与路径互证）。三轮修复链：① output `{schema,render}` 契约 + `isConcurrencySafe` 方法（激活失败暴露）→ **8/8 工具注册 live**；② lossless JSON 契约——宿主拒绝显式 `undefined` 值 → `assertLossless` 守护测试抓 3 处（get.body、preflight.pack、lockInfo.sizeBytes）；③ legacy frontmatter 形状（predecessor 条目无 created/updated，时间戳在 extra.*_at）→ core 解析器省略缺失键 + 薄包 `stripUndefined` 边界净化。**95 测试全绿**（core 88 + host 7）。教训已提案 PRO-000111（pending，dsh-plugin-dev）。**待用户决策**：preflight 零相关兜底（回放定标行为）vs min_score 参数化——随机串也返回 top-3 属设计非 bug。测试期 config（root=dsh-plugin-dev + suffix）通用部署时恢复 root:''。
