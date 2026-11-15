@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**🎉 npm 0.1.0 首次公开发布完成（2026-11-15 20:00 +08:00）**：registry 直查确认——versions: 0.0.0-stage + **0.1.0**，dist-tags **latest=0.1.0**，shasum `3a2ef277…` 与本地构建一致，maintainer=lizhiwu。发布过程实录：用户首次 publish 误在占位目录发出 0.0.0-stage（占名成功）；真仓 0.1.0 经 EOTP 浏览器认证由用户终端完成。**临时安装验证通过**（PRC-000008 证据链：npm install 拉取成功、`memhub help` bin 工作、代码特征 grep 命中、ESM barrel 67 符号导入）。git tag `v0.1.0` 已推送。遗留可选清理：`npm unpublish agent-memory-hub@0.0.0-stage`（单版本，需用户授权）；Trusted Publisher 绑定（npmjs 网页 → Settings → 包 → 绑 zhiwuli0228/agent-memory-hub + release.yml）留待下版本配 CI 自动化。
+
 **Step 6b DSH 真机复验完成（2026-11-15，desktop profile）**：薄包 `agent-memory-hub-dsh@file:` **已装进运行中的 desktop profile 并 active**（cordis fiber 启动、apply 执行）。补 `toolConflict` 策略（skip 默认/suffix）处理与旧插件 dsh-memory-hub 0.8.1 的 8 工具撞名——真机共存零冲突（旧插件仍 active、memory_* 工具无损、GUI 无崩溃、挂载失败不抛进宿主 loader 真机验证）。复验报告：docs/04-development/host-verification-2026-11-15.md。**92 测试全绿**（core 88 + host 6）。待重启宿主后做调用级端到端（suffix + 真 hub）；四宿主清单：desktop ✅，web/CLI/ACP 安装即验（同 bundle）。
 
 **Step 6 DSH 宿主接入薄包完成（2026-11-15）**：`host/dsh/`（**agent-memory-hub-dsh** 薄插件，~38KB esbuild 单文件 bundle，零运行时依赖）——cordis `apply(ctx, config)` 入口 + 8 个工具壳（memory_search/get/status/preflight/propose/cite/close_task/dejavu）**全部转发 agent-memory-hub core**（一个行为一个实现）；**故意不注册 memory_commit**（失败关闭：进 knowledge/ 只走 memhub inbox/panel 人工通道）；hub 未初始化时自禁用+警告（挂载失败不抛进宿主 loader）；hubRoot 解析 config.root > $MEMHUB_ROOT > cwd。core barrel（`src/index.ts`）公开面收敛——宿主只从 barrel import。旧仓勘察结论：接入面 = cordis `ctx.tools.register` + package.json dsh manifest + cordis.patch.yml，esbuild bundle dist/index.js。
