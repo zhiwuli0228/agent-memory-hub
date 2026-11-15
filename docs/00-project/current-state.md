@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**🏆 独占模式切换完成（2026-11-15 20:55）——desktop profile 主记忆引擎 = agent-memory-hub**：用户关闭 dsh-memory-hub 0.8.1 并重启宿主后，薄包**自动回收工具名**（无撞名 → suffix 不触发 → 8/8 工具原名注册，`__amh` 零残留）——冲突策略自适应得到真机验证。子 agent 10 步全链路验收 **10/10 ok**：读路径（status/search×2/preflight/get×2，L0 契约与 legacy frontmatter 保留全符合）、写路径（propose→PRO-000112 进 pending/）、**人通道闭环**（`memhub inbox list` CLI 可见提案——不代审批）、簿记（cite/dejavu check）。旧引擎零残留。pending 等审批：PRO-000111（0.2.x 工具契约教训）+ PRO-000112（引擎切换决策）——同目录同格式，新旧引擎的 pending 互相兼容（"knowledge 格式承诺不变"的实证）。
+
 **🎉 Step 6c 调用级端到端全部通过（2026-11-15 20:20）——真机测试闭环**：三轮"真机失败 → 根因 → 双层修复 → 守护测试"完成，最终子 agent 三测 3/3 ok（get 默认/full 双入参 + KNO-000001 交叉验证，frontmatter 完整、body 与路径互证）。三轮修复链：① output `{schema,render}` 契约 + `isConcurrencySafe` 方法（激活失败暴露）→ **8/8 工具注册 live**；② lossless JSON 契约——宿主拒绝显式 `undefined` 值 → `assertLossless` 守护测试抓 3 处（get.body、preflight.pack、lockInfo.sizeBytes）；③ legacy frontmatter 形状（predecessor 条目无 created/updated，时间戳在 extra.*_at）→ core 解析器省略缺失键 + 薄包 `stripUndefined` 边界净化。**95 测试全绿**（core 88 + host 7）。教训已提案 PRO-000111（pending，dsh-plugin-dev）。**待用户决策**：preflight 零相关兜底（回放定标行为）vs min_score 参数化——随机串也返回 top-3 属设计非 bug。测试期 config（root=dsh-plugin-dev + suffix）通用部署时恢复 root:''。
 
 **🎉 npm 0.1.0 首次公开发布完成（2026-11-15 20:00 +08:00）**：registry 直查确认——versions: 0.0.0-stage + **0.1.0**，dist-tags **latest=0.1.0**，shasum `3a2ef277…` 与本地构建一致，maintainer=lizhiwu。发布过程实录：用户首次 publish 误在占位目录发出 0.0.0-stage（占名成功）；真仓 0.1.0 经 EOTP 浏览器认证由用户终端完成。**临时安装验证通过**（PRC-000008 证据链：npm install 拉取成功、`memhub help` bin 工作、代码特征 grep 命中、ESM barrel 67 符号导入）。git tag `v0.1.0` 已推送。遗留可选清理：`npm unpublish agent-memory-hub@0.0.0-stage`（单版本，需用户授权）；Trusted Publisher 绑定（npmjs 网页 → Settings → 包 → 绑 zhiwuli0228/agent-memory-hub + release.yml）留待下版本配 CI 自动化。
