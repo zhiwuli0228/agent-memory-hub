@@ -10,7 +10,7 @@ import { buildIndex, emptyMetrics, search } from './core/search.js'
 import { commitKnowledge, getEntry, listEntries, listProposals } from './core/store.js'
 import { requireApproval } from './core/approval.js'
 import { createApiState } from './transport/server.js'
-import { startServer } from './transport/http.js'
+import { startServer, serverUrl } from './transport/http.js'
 import { createState, handleRpc, serveStdio, TOOLS, type TransportState } from './transport/mcp.js'
 
 /**
@@ -134,7 +134,10 @@ export function main(argv: string[]): number {
         const state = createApiState(root, args.workspace)
         const port = args.port ?? 7777
         const server = startServer(state, { port })
-        console.error(`memhub panel: http://127.0.0.1:${port}/  (hub: ${root})`)
+        // Port 0 resolves asynchronously — print inside the listening event.
+        server.on('listening', () => {
+          console.error(`memhub console: ${serverUrl(server)}  (hub: ${root})`)
+        })
         const shutdown = () => {
           server.close()
           process.exit(0)
@@ -253,7 +256,7 @@ function printHelp(): void {
 
   memhub init --root <dir>            initialize a hub directory
   memhub mcp --root <dir>             start the MCP stdio server
-  memhub serve --root <dir> [--port n] start the panel (127.0.0.1, graded inbox)
+  memhub serve --root <dir> [--port n] start the web console (127.0.0.1, inbox + knowledge browser + audit)
   memhub search <query>               search accepted knowledge
       [--detail L0|L1|L2] [--limit n] [--workspace id] [--json]
   memhub get <ID> [--full]            read one entry

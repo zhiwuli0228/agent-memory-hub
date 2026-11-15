@@ -143,5 +143,70 @@ describe('panel API', () => {
     expect(PANEL_HTML).toContain('/api/inbox')
     expect(PANEL_HTML).not.toMatch(/\ssrc=/i) // no external scripts
     expect(PANEL_HTML).not.toMatch(/\shref=/i) // no external stylesheets
+    expect(PANEL_HTML).toContain('/api/entries')
+    expect(PANEL_HTML).toContain('/api/ledger')
+    expect(PANEL_HTML).toContain('/api/journal')
+  })
+
+  describe('console management routes (ADR-0010)', () => {
+    it('entries lists accepted entries with metadata; detail returns frontmatter + body', () => {
+      const { state, root } = seededState()
+      const id = propose(root, 'knowledge', '浏览条目', '正文内容在此')
+      handleApi(state, 'POST', `/api/inbox/${id}/approve`)
+      const list = handleApi(state, 'GET', '/api/entries')
+      expect(list.status).toBe(200)
+      const entries = (list.body as { entries: Array<{ id: string; status: string }> }).entries
+      expect(entries).toHaveLength(1)
+      expect(entries[0]?.status).toBe('accepted')
+      const detail = handleApi(state, 'GET', `/api/entries/${entries[0]?.id}`)
+      expect(detail.status).toBe(200)
+      const body = detail.body as { frontmatter: { title: string }; body: string; path: string }
+      expect(body.frontmatter.title).toBe('浏览条目')
+      expect(body.body).toContain('正文内容在此')
+      expect(body.path).toContain('knowledge')
+    })
+
+    it('deprecate soft-removes an entry (status flips, ledger records the action)', () => {
+      const { state, root } = seededState()
+      const id = propose(root, 'knowledge', '将被废弃')
+      handleApi(state, 'POST', `/api/inbox/${id}/approve`)
+      const committed = (handleApi(state, 'GET', '/api/entries').body as { entries: Array<{ id: string }> }).entries[0]?.id
+      const response = handleApi(state, 'POST', `/api/entries/${committed}/deprecate`, { reason: '过期做法' })
+      expect(response.status).toBe(200)
+      const detail = handleApi(state, 'GET', `/api/entries/${committed}`)
+      expect((detail.body as { frontmatter: { status: string } }).frontmatter.status).toBe('deprecated')
+      expect(listLedger(root).some((r) => r['action'] === 'deprecate' && r['note'] === '过期做法')).toBe(true)
+      // Deprecated entries stay visible with includeSoftRemoved in /api/entries.
+      const list = handleApi(state, 'GET', '/api/entries')
+      expect((list.body as { entries: Array<{ status: string }> }).entries[0]?.status).toBe('deprecated')
+    })
+
+    it('hard delete physically removes the file but leaves a ledger trace', () => {
+      const { state, root } = seededState()
+      const id = propose(root, 'knowledge', '将被删除')
+      handleApi(state, 'POST', `/api/inbox/${id}/approve`)
+      const committed = (handleApi(state, 'GET', '/api/entries').body as { entries: Array<{ id: string; path: string }> }).entries[0]
+      const response = handleApi(state, 'POST', `/api/entries/${committed?.id}/delete`, { reason: '隐私请求' })
+      expect(response.status).toBe(200)
+      expect(existsSync(committed?.path ?? '')).toBe(false)
+      expect(listLedger(root).some((r) => r['action'] === 'delete' && r['note'] === '隐私请求')).toBe(true)
+      expect(handleApi(state, 'GET', `/api/entries/${committed?.id}`).status).toBe(404)
+    })
+
+    it('ledger and journal endpoints return recent records', () => {
+      const { state, root } = seededState()
+      propose(root, 'knowledge', '账本验证')
+      const ledger = handleApi(state, 'GET', '/api/ledger')
+      expect(ledger.status).toBe(200)
+      const records = (ledger.body as { records: Array<{ type?: string; action?: string }>; total: number }).records
+      expect(records.length).toBeGreaterThan(0)
+      // LedgerRecord is an event stream with two shapes: legacy `type` events
+      // and the convenience `{ts, actor, action}` form — every record has one.
+      expect(records[0]?.type ?? records[0]?.action).toBeDefined()
+      const journal = handleApi(state, 'GET', '/api/journal')
+      expect(journal.status).toBe(200)
+      expect(Array.isArray((journal.body as { entries: unknown[] }).entries)).toBe(true)
+      void root
+    })
   })
 })

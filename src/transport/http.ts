@@ -20,6 +20,15 @@ export function startServer(state: ApiState, options?: ServeOptions): ReturnType
   return server
 }
 
+/** The URL the server is actually reachable at (resolves port 0 to the OS-assigned port). */
+export function serverUrl(server: ReturnType<typeof createServer>): string {
+  const address = server.address()
+  if (address !== null && typeof address === 'object') {
+    return `http://${address.address === '::' ? '127.0.0.1' : address.address}:${address.port}/`
+  }
+  return 'http://127.0.0.1/'
+}
+
 async function route(state: ApiState, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
   const path = url.pathname

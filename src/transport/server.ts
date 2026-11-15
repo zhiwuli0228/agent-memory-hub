@@ -3,9 +3,11 @@ import { ErrorCode, HubError } from '../core/errors.js'
 import { readHubConfig } from '../core/hub.js'
 import { appendLedger, ledgerPath, readSequences, writeSequences } from '../core/ledger.js'
 import { acquireLock, assertFencing, lockInfo, releaseLock } from '../core/lock.js'
-import { commitKnowledge, getEntry, listEntries, listProposals } from '../core/store.js'
+import { commitKnowledge, deprecateEntry, getEntry, hardDeleteEntry, listEntries, listProposals } from '../core/store.js'
 import { buildIndex, emptyMetrics, search, type SearchIndex, type SearchMetrics } from '../core/search.js'
 import { resolveWorkspace, type ResolvedWorkspace } from '../core/registry.js'
+import { readJournal } from '../core/journal.js'
+import { readLedger } from '../core/ledger.js'
 import type { KnowledgeType } from '../core/types.js'
 
 /**
@@ -131,6 +133,31 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
         })
         return ok({ hits })
       }
+      case 'GET /api/entries':
+        return ok({
+          entries: listEntries(state.hubRoot, { includeSoftRemoved: true }).map((e) => ({
+            id: e.frontmatter.id,
+            version: e.frontmatter.version,
+            type: e.frontmatter.type,
+            status: e.frontmatter.status,
+            title: e.frontmatter.title,
+            summary: e.frontmatter.summary,
+            scope: e.frontmatter.scope,
+            tags: e.frontmatter.tags,
+            updated: e.frontmatter.updated,
+            path: e.path,
+          })),
+        })
+      case 'GET /api/ledger': {
+        const records = readLedger(ledgerPath(state.hubRoot))
+        const limit = typeof body?.['limit'] === 'number' ? body['limit'] : 200
+        return ok({ records: records.slice(-limit).reverse(), total: records.length })
+      }
+      case 'GET /api/journal': {
+        const day = typeof body?.['day'] === 'string' ? body['day'] : undefined
+        const entries = readJournal(state.hubRoot, day)
+        return ok({ entries: entries.slice(-200).reverse() })
+      }
       default:
         break
     }
@@ -147,6 +174,35 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
     const rejectMatch = /^\/api\/inbox\/([A-Za-z0-9-]+)\/reject$/.exec(path)
     if (rejectMatch !== null && method === 'POST') {
       return reject(state, rejectMatch[1] ?? '', body)
+    }
+    const entryMatch = /^\/api\/entries\/([A-Za-z0-9-]+)$/.exec(path)
+    if (entryMatch !== null && method === 'GET') {
+      const entry = getEntry(state.hubRoot, entryMatch[1] ?? '')
+      return ok({ frontmatter: entry.frontmatter, body: entry.body, path: entry.path })
+    }
+    const deprecateMatch = /^\/api\/entries\/([A-Za-z0-9-]+)\/deprecate$/.exec(path)
+    if (deprecateMatch !== null && method === 'POST') {
+      const reason = typeof body?.['reason'] === 'string' && body['reason'] !== '' ? body['reason'] : 'deprecated via panel'
+      return withWriteLock(state.hubRoot, () => {
+        deprecateEntry(state.hubRoot, deprecateMatch[1] ?? '', reason, {
+          appendLedger: (root, record) => appendLedger(ledgerPath(root), record),
+        })
+        state.index = buildIndex(state.hubRoot, () => new Date().toISOString())
+        state.metrics = emptyMetrics(state.index)
+        return ok({ deprecated: deprecateMatch[1] ?? '', reason })
+      })
+    }
+    const deleteMatch = /^\/api\/entries\/([A-Za-z0-9-]+)\/delete$/.exec(path)
+    if (deleteMatch !== null && method === 'POST') {
+      const reason = typeof body?.['reason'] === 'string' && body['reason'] !== '' ? body['reason'] : 'hard-deleted via panel'
+      return withWriteLock(state.hubRoot, () => {
+        hardDeleteEntry(state.hubRoot, deleteMatch[1] ?? '', reason, {
+          appendLedger: (root, record) => appendLedger(ledgerPath(root), record),
+        })
+        state.index = buildIndex(state.hubRoot, () => new Date().toISOString())
+        state.metrics = emptyMetrics(state.index)
+        return ok({ deleted: deleteMatch[1] ?? '', reason })
+      })
     }
     return bad(404, `no route: ${method} ${path}`)
   } catch (error) {
@@ -231,4 +287,4 @@ function reject(state: ApiState, id: string, body?: Record<string, unknown>): Ap
 }
 
 // Re-export for the server adapter + CLI.
-export { getEntry, readHubConfig }
+export { getEntry, listEntries, readLedger, readJournal, readHubConfig }
