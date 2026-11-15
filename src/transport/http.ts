@@ -39,13 +39,15 @@ async function route(state: ApiState, req: IncomingMessage, res: ServerResponse)
   }
   if (path.startsWith('/api/')) {
     let body: Record<string, unknown> | undefined
+    // Query params flow into body so GET handlers can accept options (ADR-0012 hub pull since=).
+    if (url.searchParams.size > 0) body = Object.fromEntries(url.searchParams.entries())
     if (req.method === 'POST') {
       const chunks: Buffer[] = []
       for await (const chunk of req) chunks.push(chunk as Buffer)
       const raw = Buffer.concat(chunks).toString('utf8')
       if (raw !== '') {
         try {
-          body = JSON.parse(raw) as Record<string, unknown>
+          body = { ...(body ?? {}), ...(JSON.parse(raw) as Record<string, unknown>) }
         } catch {
           res.writeHead(400, { 'content-type': 'application/json' })
           res.end(JSON.stringify({ error: 'invalid JSON body' }))

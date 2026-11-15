@@ -1,11 +1,12 @@
-import { readFileSync, unlinkSync } from 'node:fs'
+import { readFileSync, unlinkSync, appendFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { ErrorCode, HubError } from '../core/errors.js'
 import { readHubConfig } from '../core/hub.js'
 import { appendLedger, ledgerPath, readSequences, writeSequences } from '../core/ledger.js'
 import { acquireLock, assertFencing, lockInfo, releaseLock } from '../core/lock.js'
-import { commitKnowledge, deprecateEntry, getEntry, hardDeleteEntry, listEntries, listProposals } from '../core/store.js'
+import { commitKnowledge, createProposal, deprecateEntry, getEntry, hardDeleteEntry, listEntries, listProposals } from '../core/store.js'
 import { buildIndex, emptyMetrics, search, type SearchIndex, type SearchMetrics } from '../core/search.js'
-import { resolveWorkspace, type ResolvedWorkspace } from '../core/registry.js'
+import { registerWorkspace, resolveWorkspace, type ResolvedWorkspace } from '../core/registry.js'
 import { readJournal } from '../core/journal.js'
 import { readLedger } from '../core/ledger.js'
 import { autoCommit } from './autocommit.js'
@@ -75,11 +76,16 @@ function commitOne(hubRoot: string, proposalId: string, note?: string): { knowle
   if (proposal === undefined) {
     throw new HubError(ErrorCode.E_NOT_FOUND, `pending proposal not found: ${proposalId}`, { proposalId })
   }
-  // Re-extraction: a proposal carrying extra.supersedes upgrades that entry's
-  // version instead of creating a duplicate (ADR-0010 re-extraction loop).
+  // Target selection (ADR-0012): a proposal carrying origin_id upserts that
+  // entry in place (create with the same id when the central hub has never
+  // seen it; version bump when it has). A legacy `supersedes` still works
+  // for local re-extraction proposals, and requires the target to exist.
+  const rawOriginId = proposal.frontmatter.extra['origin_id']
+  const originId = typeof rawOriginId === 'string' && rawOriginId !== '' && rawOriginId !== '[]' ? rawOriginId : undefined
   const rawSupersedes = proposal.frontmatter.extra['supersedes']
-  const targetId = typeof rawSupersedes === 'string' && rawSupersedes !== '' ? rawSupersedes.split(/\s+/)[0] : undefined
-  const superseding = targetId !== undefined && existsSyncSafe(hubRoot, targetId)
+  const supersedesTarget = typeof rawSupersedes === 'string' && rawSupersedes !== '' && rawSupersedes !== '[]' ? rawSupersedes.split(/\s+/)[0] : undefined
+  const targetId = originId ?? supersedesTarget
+  const superseding = targetId !== undefined && (originId !== undefined || existsSyncSafe(hubRoot, targetId))
   const committed = commitKnowledge(
     hubRoot,
     {
@@ -141,6 +147,49 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
             path: p.path,
           })),
         })
+      case 'POST /api/propose': {
+        // ADR-0012: remote hubs push their approved entries here as proposals —
+        // this inbox IS the central review (approve = merge, reject = declined).
+        // originId keeps the source hub's entry id so approval upserts in place.
+        const type = body?.['type']
+        const title = body?.['title']
+        const summary = body?.['summary']
+        const bodyText = body?.['body']
+        if (typeof type !== 'string' || typeof title !== 'string' || typeof summary !== 'string' || typeof bodyText !== 'string') {
+          return bad(400, 'propose requires type, title, summary, body')
+        }
+        return withWriteLock(state.hubRoot, () => {
+          const proposal = createProposal(
+            state.hubRoot,
+            {
+              type: type as KnowledgeType,
+              title,
+              summary,
+              scope: { level: 'project', workspaceId: state.workspace.workspaceId },
+              tags: Array.isArray(body?.['tags']) ? (body?.['tags'] as string[]).map(String) : [],
+              body: bodyText,
+              sourceRefs: Array.isArray(body?.['sourceRefs']) ? (body?.['sourceRefs'] as string[]).map(String) : [`remote:${new Date().toISOString()}`],
+              supersedes: Array.isArray(body?.['supersedes']) ? (body?.['supersedes'] as string[]).map(String) : undefined,
+              originId: typeof body?.['originId'] === 'string' ? body['originId'] : undefined,
+              origin: typeof body?.['origin'] === 'string' ? body['origin'] : 'remote-hub',
+              actor: 'remote',
+            },
+            { readSequences, writeSequences, appendLedger: (root, record) => appendLedger(ledgerPath(root), record) },
+          )
+          registerWorkspace(
+            state.hubRoot,
+            state.workspace,
+            () => new Date().toISOString(),
+            readHubConfig,
+            (root, content) => {
+              appendFileSync(join(root, 'hub.yaml'), content, 'utf8')
+            },
+          )
+          state.index = buildIndex(state.hubRoot, () => new Date().toISOString())
+          state.metrics = emptyMetrics(state.index)
+          return ok({ proposalId: proposal.id, nextStep: 'central review via inbox' })
+        })
+      }
       case 'POST /api/search': {
         const query = String(body?.['query'] ?? '')
         if (query === '') return bad(400, 'query is required')
@@ -151,21 +200,24 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
         })
         return ok({ hits })
       }
-      case 'GET /api/entries':
-        return ok({
-          entries: listEntries(state.hubRoot, { includeSoftRemoved: true }).map((e) => ({
-            id: e.frontmatter.id,
-            version: e.frontmatter.version,
-            type: e.frontmatter.type,
-            status: e.frontmatter.status,
-            title: e.frontmatter.title,
-            summary: e.frontmatter.summary,
-            scope: e.frontmatter.scope,
-            tags: e.frontmatter.tags,
-            updated: e.frontmatter.updated,
-            path: e.path,
-          })),
-        })
+      case 'GET /api/entries': {
+        const since = typeof body?.['since'] === 'string' ? body['since'] : undefined
+        const all = listEntries(state.hubRoot, { includeSoftRemoved: true }).map((e) => ({
+          id: e.frontmatter.id,
+          version: e.frontmatter.version,
+          type: e.frontmatter.type,
+          status: e.frontmatter.status,
+          title: e.frontmatter.title,
+          summary: e.frontmatter.summary,
+          scope: e.frontmatter.scope,
+          tags: e.frontmatter.tags,
+          updated: e.frontmatter.updated,
+          path: e.path,
+        }))
+        // ADR-0012: `since` enables incremental hub pull (updated > since).
+        const entries = since === undefined ? all : all.filter((e) => (e.updated ?? '') > since)
+        return ok({ entries, since: since ?? null, count: entries.length })
+      }
       case 'GET /api/ledger': {
         const records = readLedger(ledgerPath(state.hubRoot))
         const limit = typeof body?.['limit'] === 'number' ? body['limit'] : 200

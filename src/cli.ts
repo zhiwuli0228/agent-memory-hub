@@ -288,6 +288,22 @@ export function main(argv: string[]): number {
         out(report, args.json)
         return report.ok ? 0 : 1
       }
+      case 'hub': {
+        const root = requireHub(args)
+        const sub = args._[1]
+        const central = args.remote
+        if (sub === undefined || central === undefined) {
+          throw new HubError(ErrorCode.E_VALIDATION, 'usage: memhub hub <push|pull> --remote <central-serve-url> [--since <iso>]')
+        }
+        // main() is synchronous; hubSync is async — stash the promise so the
+        // entry guard can await it (main never blocks an in-process server).
+        pendingHubSync = (async () => {
+          const result = await hubSync(root, sub, central.replace(/\/$/, ''), args.since)
+          out(result, args.json)
+          return result.ok ? 0 : 1
+        })()
+        return KEEP_ALIVE
+      }
       case 'extract': {
         const root = requireHub(args)
         const sub = args._[1]
@@ -335,6 +351,148 @@ function git(root: string, argv: string[]): { ok: boolean; output: string } {
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
   return { ok: result.status === 0, output }
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0012 hub-to-hub sync: one resident `memhub serve` is the authority.
+// push  = local approved entries become PROPOSALS on the central hub
+//         (central inbox = the review gate; approve = merge, reject = no)
+// pull  = central-approved entries apply locally by version comparison
+// HTTP is async in-process: spawnSync would block this event loop, which
+// deadlocks any hubSync invoked from a process that also hosts a server.
+// ---------------------------------------------------------------------------
+
+interface PushState { lastPushedAt: string }
+interface PullState { lastPulledAt: string }
+
+function readJsonState<T extends object>(root: string, file: string, fallback: T): T {
+  const path = join(root, 'records', file)
+  if (!existsSync(path)) return fallback
+  try {
+    return { ...fallback, ...(JSON.parse(readFileSync(path, 'utf8')) as object) } as T
+  } catch {
+    return fallback
+  }
+}
+
+function writeJsonState(root: string, file: string, value: object): void {
+  atomicWrite(join(root, 'records', file), JSON.stringify(value, null, 2) + '\n')
+}
+
+const PUSH_STATE_FILE = 'hub-push-state.json'
+const PULL_STATE_FILE = 'hub-pull-state.json'
+
+interface HubFetchResult { ok: boolean; status: number; body: Record<string, unknown> }
+
+/** Injectable for tests; production hits the central hub over HTTP. */
+export type HubFetch = (url: string, init?: { method?: string; body?: string }) => Promise<HubFetchResult>
+
+const hubFetchHttp: HubFetch = async (url, init) => {
+  const r = await fetch(url, {
+    method: init?.method,
+    headers: { 'content-type': 'application/json' },
+    body: init?.body,
+    signal: AbortSignal.timeout(20000),
+  })
+  return { ok: r.ok, status: r.status, body: (await r.json().catch(() => ({}))) as Record<string, unknown> }
+}
+
+/** Exported for tests: hub-to-hub sync roundtrip (ADR-0012). */
+export async function hubSync(
+  root: string,
+  sub: string,
+  central: string,
+  since?: string,
+  fetchImpl: HubFetch = hubFetchHttp,
+): Promise<{ ok: boolean; [key: string]: unknown }> {
+  if (sub === 'push') {
+    const state = readJsonState<PushState>(root, PUSH_STATE_FILE, { lastPushedAt: '' })
+    const effectiveSince = since ?? state.lastPushedAt
+    const all = listEntries(root, { includeSoftRemoved: false })
+    const entries = effectiveSince === '' ? all : all.filter((e) => (e.frontmatter.updated ?? '') > effectiveSince)
+    if (entries.length === 0) return { ok: true, pushed: 0, note: 'nothing new since last push' }
+    const results: Array<{ localId: string; ok: boolean; proposalId?: string; error?: string }> = []
+    for (const e of entries) {
+      try {
+        const r = await fetchImpl(`${central}/api/propose`, {
+          method: 'POST',
+          body: JSON.stringify({
+            type: e.frontmatter.type,
+            title: e.frontmatter.title,
+            summary: e.frontmatter.summary,
+            tags: e.frontmatter.tags,
+            body: readFileSync(e.path, 'utf8').split('---')[2]?.trim() ?? '',
+            sourceRefs: [`hub:${e.frontmatter.id}@v${e.frontmatter.version}`],
+            originId: e.frontmatter.id,
+            origin: `hub-push:${root.replace(/\\/g, '/').split('/').pop() ?? 'local'}`,
+          }),
+        })
+        const body = r.body as { proposalId?: string; error?: string }
+        results.push({ localId: e.frontmatter.id, ok: r.ok, ...(body.proposalId !== undefined ? { proposalId: body.proposalId } : {}), ...(body.error !== undefined ? { error: body.error } : {}) })
+      } catch (error) {
+        results.push({ localId: e.frontmatter.id, ok: false, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    const pushed = results.filter((r) => r.ok).length
+    if (pushed === entries.length) writeJsonState(root, PUSH_STATE_FILE, { lastPushedAt: new Date().toISOString() })
+    return { ok: pushed > 0, pushed, total: entries.length, results, nextStep: 'central inbox review: approve = merge into the central knowledge base' }
+  }
+  if (sub === 'pull') {
+    const state = readJsonState<PullState>(root, PULL_STATE_FILE, { lastPulledAt: '' })
+    const effectiveSince = since ?? state.lastPulledAt
+    const q = effectiveSince === '' ? '' : `?since=${encodeURIComponent(effectiveSince)}`
+    const listResult = await fetchImpl(`${central}/api/entries${q}`, { method: 'GET' })
+    if (!listResult.ok) return { ok: false, error: `central hub list failed: ${JSON.stringify(listResult.body).slice(0, 200)}` }
+    const listed = (listResult.body as { entries?: Array<{ id: string; status: string }> }).entries ?? []
+    const applied: string[] = []
+    const skipped: string[] = []
+    const errors: string[] = []
+    for (const listedEntry of listed) {
+      if (listedEntry.status !== 'accepted') continue
+      try {
+        const detail = await fetchImpl(`${central}/api/entries/${encodeURIComponent(listedEntry.id)}`, { method: 'GET' })
+        if (!detail.ok) {
+          errors.push(`${listedEntry.id}: detail fetch failed (${detail.status})`)
+          continue
+        }
+        const d = detail.body as { frontmatter: { id: string; version: number; type: string; title: string; summary: string; scope: KnowledgeScopeLike; tags: string[]; updated: string }; body: string }
+        let localVersion = 0
+        try {
+          localVersion = getEntry(root, d.frontmatter.id).frontmatter.version
+        } catch {
+          localVersion = 0 // not present locally
+        }
+        if (d.frontmatter.version <= localVersion) {
+          skipped.push(d.frontmatter.id)
+          continue
+        }
+        commitKnowledge(
+          root,
+          {
+            ...(localVersion > 0 ? { id: d.frontmatter.id } : {}),
+            type: d.frontmatter.type as Parameters<typeof commitKnowledge>[1]['type'],
+            title: d.frontmatter.title,
+            summary: d.frontmatter.summary,
+            scope: d.frontmatter.scope as Parameters<typeof commitKnowledge>[1]['scope'],
+            tags: d.frontmatter.tags,
+            body: d.body,
+            sourceRefs: [`central-hub:${d.frontmatter.id}@v${d.frontmatter.version}`],
+            actor: 'remote-hub',
+          },
+          { readSequences, writeSequences, appendLedger: (r, record) => appendLedger(ledgerPath(r), record) },
+        )
+        applied.push(`${d.frontmatter.id}@v${d.frontmatter.version}`)
+      } catch (error) {
+        errors.push(`${listedEntry.id}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    writeJsonState(root, PULL_STATE_FILE, { lastPulledAt: new Date().toISOString() })
+    autoCommit(root, `pull: applied ${applied.length} central entries`)
+    return { ok: errors.length === 0, applied, skipped, errors, from: effectiveSince || '(beginning)' }
+  }
+  return { ok: false, error: `unknown hub subcommand: ${sub} (push|pull)` }
+}
+
+interface KnowledgeScopeLike { level: string; workspaceId?: string; domainId?: string }
 
 /** ADR-0011: the hub root IS a git repository — sync delegates to git. */
 function syncCommand(root: string, sub: string, remote?: string, message?: string): { ok: boolean; [key: string]: unknown } {
@@ -407,9 +565,13 @@ function printHelp(): void {
   memhub extract material [--since]   extraction material since the watermark (JSON for
                                       ANY scheduler's agent: cron / workflow platform / CI)
   memhub extract done [--since iso]   advance the extraction watermark after a run
+  memhub hub <push|pull> --remote <central-serve-url> [--since iso]
+                                      ADR-0012 hub-to-hub sync: push local approved entries
+                                      as central proposals (central inbox = review gate);
+                                      pull central-approved entries into local knowledge
   memhub sync <status|init|push|pull> [--remote url] [--message text]
-                                      git-first hub sync (ADR-0011): push knowledge to a
-                                      central repo, review via PR, issues for feedback
+                                      optional git backup of the hub directory (ADR-0011,
+                                      demoted to disaster recovery by ADR-0012)
   memhub tools                        list MCP tool names
   memhub help                         this text
 `)
@@ -420,9 +582,20 @@ const invokedDirectly =
   process.argv[1] !== undefined &&
   (import.meta.url === pathToFileURL(process.argv[1]).href ||
     process.argv[1].replace(/\\/g, '/').endsWith('/dist/cli.js'))
+
+/** Set when a command (hub) defers its work to an async continuation. */
+let pendingHubSync: Promise<number> | null = null
+
 if (invokedDirectly && process.argv.length > 2) {
   const code = main(process.argv.slice(2))
-  if (code !== KEEP_ALIVE) process.exit(code)
+  // TS narrows pendingHubSync to null here (assignment happens inside main);
+  // cast through unknown so the async continuation still runs.
+  const job = pendingHubSync as unknown as Promise<number> | null
+  if (code === KEEP_ALIVE && job !== null) {
+    job.then((exitCode) => process.exit(exitCode)).catch(() => process.exit(1))
+  } else if (code !== KEEP_ALIVE) {
+    process.exit(code)
+  }
 }
 
 export { createState, handleRpc, type TransportState, readHubConfig, readLedger, registerWorkspace, LEDGER_FILE }

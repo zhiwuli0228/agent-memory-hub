@@ -190,8 +190,40 @@ export function commitKnowledge(
     })
     return { id, version: 1, path }
   }
-  // update: snapshot previous version into history/, then write version+1
-  const previous = getEntry(root, input.id)
+  // Explicit id: ADR-0012 cross-hub upsert. When the id does not exist
+  // locally yet, it is created AS that id (keeps hub-to-hub identity
+  // stable); otherwise it is the usual version upgrade.
+  let previous: { frontmatter: KnowledgeFrontmatter; path: string; body: string }
+  try {
+    const found = getEntry(root, input.id)
+    previous = { frontmatter: found.frontmatter, path: found.path, body: found.body }
+  } catch {
+    const fm: KnowledgeFrontmatter = {
+      id: input.id,
+      version: 1,
+      type: input.type,
+      status: 'accepted',
+      title: input.title,
+      summary: input.summary,
+      scope: input.scope,
+      tags: input.tags ?? [],
+      created: ts,
+      updated: ts,
+      last_verified: ts,
+      extra: input.expiresAt !== undefined ? { expires_at: input.expiresAt } : {},
+    }
+    const path = entryPath(root, input.type, input.id)
+    atomicWrite(path, renderKnowledgeMarkdown(fm, input.body))
+    helpers.appendLedger(root, {
+      ts,
+      actor: input.actor ?? 'human',
+      action: 'approve',
+      id: input.id,
+      version: 1,
+      source_refs: input.sourceRefs,
+    })
+    return { id: input.id, version: 1, path }
+  }
   const prevFm = previous.frontmatter
   if (prevFm.type !== input.type) {
     throw new HubError(ErrorCode.E_VALIDATION, `type mismatch for ${input.id}: ${prevFm.type} ≠ ${input.type}`)
@@ -272,7 +304,7 @@ export function hardDeleteEntry(
  * bumps that entry's version instead of creating a duplicate. */
 export function createProposal(
   root: string,
-  input: Omit<SaveKnowledgeInput, 'id'> & { sourceRefs: string[]; supersedes?: string[] },
+  input: Omit<SaveKnowledgeInput, 'id'> & { sourceRefs: string[]; supersedes?: string[]; origin?: string; originId?: string },
   helpers: {
     nowIsoValue?: string
     readSequences: (root: string) => Record<string, number>
@@ -296,6 +328,8 @@ export function createProposal(
     extra: {
       source_refs: input.sourceRefs.join(' '),
       ...(input.supersedes !== undefined && input.supersedes.length > 0 ? { supersedes: input.supersedes.join(' ') } : {}),
+      ...(input.origin !== undefined ? { origin: input.origin } : {}),
+      ...(input.originId !== undefined ? { origin_id: input.originId } : {}),
     },
   }
   const path = join(pendingDir(root), `${proposalId}.md`)
