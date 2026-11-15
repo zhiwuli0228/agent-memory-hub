@@ -9,6 +9,8 @@ import { registerWorkspace, resolveWorkspace } from './core/registry.js'
 import { buildIndex, emptyMetrics, search } from './core/search.js'
 import { commitKnowledge, getEntry, listEntries, listProposals } from './core/store.js'
 import { requireApproval } from './core/approval.js'
+import { createApiState } from './transport/server.js'
+import { startServer } from './transport/http.js'
 import { createState, handleRpc, serveStdio, TOOLS, type TransportState } from './transport/mcp.js'
 
 /**
@@ -27,6 +29,7 @@ interface CliArgs {
   full?: boolean
   channel?: string
   note?: string
+  port?: number
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -63,6 +66,10 @@ function parseArgs(argv: string[]): CliArgs {
         break
       case '--note':
         args.note = argv[i + 1]
+        i += 1
+        break
+      case '--port':
+        args.port = Number(argv[i + 1])
         i += 1
         break
       default:
@@ -120,6 +127,20 @@ export function main(argv: string[]): number {
         const root = requireHub(args)
         const state = createState(root, args.workspace)
         serveStdio(state)
+        return KEEP_ALIVE
+      }
+      case 'serve': {
+        const root = requireHub(args)
+        const state = createApiState(root, args.workspace)
+        const port = args.port ?? 7777
+        const server = startServer(state, { port })
+        console.error(`memhub panel: http://127.0.0.1:${port}/  (hub: ${root})`)
+        const shutdown = () => {
+          server.close()
+          process.exit(0)
+        }
+        process.on('SIGINT', shutdown)
+        process.on('SIGTERM', shutdown)
         return KEEP_ALIVE
       }
       case 'search': {
@@ -232,6 +253,7 @@ function printHelp(): void {
 
   memhub init --root <dir>            initialize a hub directory
   memhub mcp --root <dir>             start the MCP stdio server
+  memhub serve --root <dir> [--port n] start the panel (127.0.0.1, graded inbox)
   memhub search <query>               search accepted knowledge
       [--detail L0|L1|L2] [--limit n] [--workspace id] [--json]
   memhub get <ID> [--full]            read one entry

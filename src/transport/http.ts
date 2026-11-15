@@ -1,0 +1,54 @@
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { PANEL_HTML } from './panel.js'
+import { handleApi, type ApiState } from './server.js'
+
+/**
+ * HTTP adapter: thin node:http server delegating to the pure handleApi
+ * router. Binds 127.0.0.1 by default (the panel is a local human channel).
+ */
+
+export interface ServeOptions {
+  port?: number
+  host?: string
+}
+
+export function startServer(state: ApiState, options?: ServeOptions): ReturnType<typeof createServer> {
+  const server = createServer((req, res) => {
+    void route(state, req, res)
+  })
+  server.listen(options?.port ?? 7777, options?.host ?? '127.0.0.1')
+  return server
+}
+
+async function route(state: ApiState, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
+  const path = url.pathname
+  if (req.method === 'GET' && (path === '/' || path === '/panel')) {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end(PANEL_HTML)
+    return
+  }
+  if (path.startsWith('/api/')) {
+    let body: Record<string, unknown> | undefined
+    if (req.method === 'POST') {
+      const chunks: Buffer[] = []
+      for await (const chunk of req) chunks.push(chunk as Buffer)
+      const raw = Buffer.concat(chunks).toString('utf8')
+      if (raw !== '') {
+        try {
+          body = JSON.parse(raw) as Record<string, unknown>
+        } catch {
+          res.writeHead(400, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: 'invalid JSON body' }))
+          return
+        }
+      }
+    }
+    const response = handleApi(state, req.method ?? 'GET', path, body)
+    res.writeHead(response.status, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(response.body))
+    return
+  }
+  res.writeHead(404, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ error: `no route: ${req.method} ${path}` }))
+}

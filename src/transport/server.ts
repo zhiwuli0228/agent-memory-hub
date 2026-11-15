@@ -1,0 +1,234 @@
+import { readFileSync, unlinkSync } from 'node:fs'
+import { ErrorCode, HubError } from '../core/errors.js'
+import { readHubConfig } from '../core/hub.js'
+import { appendLedger, ledgerPath, readSequences, writeSequences } from '../core/ledger.js'
+import { acquireLock, assertFencing, lockInfo, releaseLock } from '../core/lock.js'
+import { commitKnowledge, getEntry, listEntries, listProposals } from '../core/store.js'
+import { buildIndex, emptyMetrics, search, type SearchIndex, type SearchMetrics } from '../core/search.js'
+import { resolveWorkspace, type ResolvedWorkspace } from '../core/registry.js'
+import type { KnowledgeType } from '../core/types.js'
+
+/**
+ * Serve panel HTTP API — pure request handler (createServer is a thin
+ * adapter). The panel is a human channel (panel): approving from it carries
+ * real approval, unlike memory_commit over MCP.
+ *
+ * Graded approval: decision / constraint / api-catalog entries shape future
+ * behavior, so they must be approved individually; lower-risk types may be
+ * approved in batches.
+ */
+
+/** Types whose approval must be one-by-one (they constrain future behavior). */
+const INDIVIDUAL_TYPES: readonly KnowledgeType[] = ['decision', 'constraint', 'api-catalog']
+
+export type ApprovalGrade = 'individual' | 'batch'
+
+export function gradeFor(type: KnowledgeType): ApprovalGrade {
+  return INDIVIDUAL_TYPES.includes(type) ? 'individual' : 'batch'
+}
+
+export interface ApiState {
+  hubRoot: string
+  workspace: ResolvedWorkspace
+  index: SearchIndex
+  metrics: SearchMetrics
+}
+
+export function createApiState(hubRoot: string, workspaceArg?: string): ApiState {
+  const workspace = resolveWorkspace(process.cwd(), workspaceArg)
+  const index = buildIndex(hubRoot, () => new Date().toISOString())
+  return { hubRoot, workspace, index, metrics: emptyMetrics(index) }
+}
+
+export interface ApiResponse {
+  status: number
+  body: unknown
+}
+
+function ok(body: unknown): ApiResponse {
+  return { status: 200, body }
+}
+
+function bad(status: number, message: string, details?: unknown): ApiResponse {
+  return { status, body: { error: message, details } }
+}
+
+function withWriteLock<T>(hubRoot: string, fn: () => T): T {
+  const acquired = acquireLock(hubRoot)
+  if (!acquired.ok) {
+    throw new HubError(ErrorCode.E_READONLY, 'another writer holds the lease', { holder: acquired.holder })
+  }
+  const token = acquired.lock?.token ?? ''
+  try {
+    assertFencing(hubRoot, token)
+    return fn()
+  } finally {
+    releaseLock(hubRoot, token)
+  }
+}
+
+function commitOne(hubRoot: string, proposalId: string, note?: string): { knowledgeId: string; version: number } {
+  const proposal = listProposals(hubRoot).find((p) => p.id === proposalId)
+  if (proposal === undefined) {
+    throw new HubError(ErrorCode.E_NOT_FOUND, `pending proposal not found: ${proposalId}`, { proposalId })
+  }
+  const committed = commitKnowledge(
+    hubRoot,
+    {
+      type: proposal.frontmatter.type,
+      title: proposal.frontmatter.title,
+      summary: proposal.frontmatter.summary,
+      scope: proposal.frontmatter.scope,
+      tags: proposal.frontmatter.tags,
+      body: readFileSync(proposal.path, 'utf8').split('---')[2]?.trim() ?? '',
+      actor: 'panel',
+    },
+    { readSequences, writeSequences, appendLedger: (root, record) => appendLedger(ledgerPath(root), record) },
+  )
+  unlinkSync(proposal.path)
+  appendLedger(ledgerPath(hubRoot), {
+    type: 'proposal.committed',
+    proposalId,
+    knowledgeId: committed.id,
+    channel: 'panel',
+    note,
+    at: new Date().toISOString(),
+  })
+  return { knowledgeId: committed.id, version: committed.version }
+}
+
+/** Route one API request. `body` is the parsed JSON body or undefined. */
+export function handleApi(state: ApiState, method: string, path: string, body?: Record<string, unknown>): ApiResponse {
+  try {
+    switch (`${method} ${path}`) {
+      case 'GET /api/status':
+        return ok({
+          hubRoot: state.hubRoot,
+          workspace: state.workspace,
+          lock: lockInfo(state.hubRoot),
+          metrics: state.metrics,
+          acceptedCount: listEntries(state.hubRoot).length,
+        })
+      case 'GET /api/inbox':
+        return ok({
+          proposals: listProposals(state.hubRoot).map((p) => ({
+            id: p.id,
+            type: p.frontmatter.type,
+            title: p.frontmatter.title,
+            summary: p.frontmatter.summary,
+            tags: p.frontmatter.tags,
+            grade: gradeFor(p.frontmatter.type),
+            path: p.path,
+          })),
+        })
+      case 'POST /api/search': {
+        const query = String(body?.['query'] ?? '')
+        if (query === '') return bad(400, 'query is required')
+        const hits = search(state.index, query, {
+          workspaceId: state.workspace.workspaceId,
+          detail: 'L1',
+          limit: typeof body?.['limit'] === 'number' ? body['limit'] : 10,
+        })
+        return ok({ hits })
+      }
+      default:
+        break
+    }
+    const approveMatch = /^\/api\/inbox\/([A-Za-z0-9-]+)\/approve$/.exec(path)
+    if (approveMatch !== null && method === 'POST') {
+      return approve(state, [approveMatch[1] ?? ''], body)
+    }
+    const batchMatch = /^\/api\/inbox\/approve$/.exec(path)
+    if (batchMatch !== null && method === 'POST') {
+      const ids = body?.['ids']
+      if (!Array.isArray(ids) || ids.length === 0) return bad(400, 'ids array is required for batch approval')
+      return approve(state, ids.map(String), body)
+    }
+    const rejectMatch = /^\/api\/inbox\/([A-Za-z0-9-]+)\/reject$/.exec(path)
+    if (rejectMatch !== null && method === 'POST') {
+      return reject(state, rejectMatch[1] ?? '', body)
+    }
+    return bad(404, `no route: ${method} ${path}`)
+  } catch (error) {
+    if (error instanceof HubError) {
+      const map: Record<string, number> = {
+        [ErrorCode.E_NOT_FOUND]: 404,
+        [ErrorCode.E_VALIDATION]: 400,
+        [ErrorCode.E_CONFLICT]: 409,
+        [ErrorCode.E_READONLY]: 423,
+        [ErrorCode.E_APPROVAL_REQUIRED]: 403,
+        [ErrorCode.E_HUB_NOT_INITIALIZED]: 404,
+      }
+      return bad(map[error.code] ?? 500, error.message, error.details)
+    }
+    return bad(500, error instanceof Error ? error.message : String(error))
+  }
+}
+
+function approve(state: ApiState, ids: string[], body?: Record<string, unknown>): ApiResponse {
+  if (ids.length > 1) {
+    // Graded approval: batch only when every id is a batch-grade type.
+    const proposals = listProposals(state.hubRoot)
+    const types = ids.map((id) => proposals.find((p) => p.id === id)?.frontmatter.type)
+    if (types.some((t) => t === undefined)) return bad(404, 'unknown proposal id in batch')
+    if (types.some((t) => gradeFor(t as KnowledgeType) === 'individual')) {
+      return bad(403, 'decision/constraint/api-catalog must be approved individually (graded approval)', {
+        individualTypes: INDIVIDUAL_TYPES,
+      })
+    }
+  }
+  const note = typeof body?.['note'] === 'string' ? body['note'] : undefined
+  return withWriteLock(state.hubRoot, () => {
+    const results: Array<{ proposalId: string; knowledgeId?: string; version?: number; error?: string }> = []
+    let firstError: HubError | null = null
+    for (const id of ids) {
+      try {
+        const committed = commitOne(state.hubRoot, id, note)
+        results.push({ proposalId: id, knowledgeId: committed.knowledgeId, version: committed.version })
+      } catch (error) {
+        if (error instanceof HubError && firstError === null) firstError = error
+        results.push({ proposalId: id, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    // Single-id approval surfaces the real status (404 for unknown id, etc.);
+    // batches report partial success as 207.
+    if (ids.length === 1 && firstError !== null) {
+      return bad(httpStatusFor(firstError), firstError.message, firstError.details)
+    }
+    // Refresh the index so the panel search sees new entries.
+    state.index = buildIndex(state.hubRoot, () => new Date().toISOString())
+    state.metrics = emptyMetrics(state.index)
+    const failed = results.some((r) => r.error !== undefined)
+    return { status: failed ? 207 : 200, body: { results } }
+  })
+}
+
+function httpStatusFor(error: HubError): number {
+  const map: Record<string, number> = {
+    [ErrorCode.E_NOT_FOUND]: 404,
+    [ErrorCode.E_VALIDATION]: 400,
+    [ErrorCode.E_CONFLICT]: 409,
+    [ErrorCode.E_READONLY]: 423,
+    [ErrorCode.E_APPROVAL_REQUIRED]: 403,
+    [ErrorCode.E_HUB_NOT_INITIALIZED]: 404,
+  }
+  return map[error.code] ?? 500
+}
+
+function reject(state: ApiState, id: string, body?: Record<string, unknown>): ApiResponse {
+  const proposal = listProposals(state.hubRoot).find((p) => p.id === id)
+  if (proposal === undefined) return bad(404, `pending proposal not found: ${id}`)
+  const note = typeof body?.['note'] === 'string' ? body['note'] : undefined
+  appendLedger(ledgerPath(state.hubRoot), {
+    type: 'proposal.rejected',
+    proposalId: id,
+    channel: 'panel',
+    note,
+    at: new Date().toISOString(),
+  })
+  unlinkSync(proposal.path)
+  return ok({ rejected: id })
+}
+
+// Re-export for the server adapter + CLI.
+export { getEntry, readHubConfig }
