@@ -1,14 +1,16 @@
-import { readFileSync } from 'node:fs'
-import { spawn } from 'node:child_process'
-import { resolve } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ErrorCode, HubError } from './core/errors.js'
+import { atomicWrite } from './core/atomic.js'
 import { initHub, isHubInitialized, LEDGER_FILE, readHubConfig } from './core/hub.js'
 import { appendLedger, ledgerPath, readLedger, readSequences, writeSequences } from './core/ledger.js'
 import { acquireLock, assertFencing, lockInfo, releaseLock } from './core/lock.js'
 import { registerWorkspace, resolveWorkspace } from './core/registry.js'
 import { buildIndex, emptyMetrics, search } from './core/search.js'
 import { commitKnowledge, getEntry, listEntries, listProposals } from './core/store.js'
+import { validateHub } from './core/validate.js'
 import { requireApproval } from './core/approval.js'
 import { createApiState } from './transport/server.js'
 import { startServer, serverUrl } from './transport/http.js'
@@ -32,6 +34,8 @@ interface CliArgs {
   note?: string
   port?: number
   open?: boolean
+  remote?: string
+  message?: string
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -76,6 +80,14 @@ function parseArgs(argv: string[]): CliArgs {
         break
       case '--no-open':
         args.open = false
+        break
+      case '--remote':
+        args.remote = argv[i + 1]
+        i += 1
+        break
+      case '--message':
+        args.message = argv[i + 1]
+        i += 1
         break
       default:
         args._.push(arg)
@@ -262,6 +274,20 @@ export function main(argv: string[]): number {
         out(Object.keys(TOOLS), true)
         return 0
       }
+      case 'validate': {
+        const root = requireHub(args)
+        const report = validateHub(root)
+        out(report, args.json)
+        return report.ok ? 0 : 1
+      }
+      case 'sync': {
+        const root = requireHub(args)
+        const sub = args._[1]
+        if (sub === undefined) throw new HubError(ErrorCode.E_VALIDATION, 'usage: memhub sync <status|init|push|pull> [--remote url] [--message text]')
+        const result = syncCommand(root, sub, args.remote, args.message)
+        out(result, args.json)
+        return result.ok ? 0 : 1
+      }
       case 'help':
       case undefined:
         printHelp()
@@ -275,6 +301,66 @@ export function main(argv: string[]): number {
     fail(error)
     return 1
   }
+}
+
+function git(root: string, argv: string[]): { ok: boolean; output: string } {
+  const result = spawnSync('git', argv, { cwd: root, encoding: 'utf8' })
+  if (result.error !== undefined) {
+    return { ok: false, output: `git not available: ${(result.error as Error).message}` }
+  }
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
+  return { ok: result.status === 0, output }
+}
+
+/** ADR-0011: the hub root IS a git repository — sync delegates to git. */
+function syncCommand(root: string, sub: string, remote?: string, message?: string): { ok: boolean; [key: string]: unknown } {
+  const inside = git(root, ['rev-parse', '--is-inside-work-tree'])
+  if (sub === 'init') {
+    if (!inside.ok) {
+      const init = git(root, ['init'])
+      if (!init.ok) return { ok: false, error: init.output }
+    }
+    if (remote !== undefined) {
+      const existing = git(root, ['remote', 'get-url', 'origin'])
+      if (existing.ok) git(root, ['remote', 'set-url', 'origin', remote])
+      else git(root, ['remote', 'add', 'origin', remote])
+    }
+    // Keep pending/ out of the repository: proposals are a local queue.
+    const gitignore = join(root, '.gitignore')
+    if (!existsSync(gitignore)) atomicWrite(gitignore, 'pending/\n')
+    return { ok: true, action: 'init', nextStep: 'memhub sync push --message "initial memory snapshot"' }
+  }
+  if (!inside.ok) return { ok: false, error: `hub root is not a git repository — run: memhub sync init --remote <url>` }
+  if (sub === 'status') {
+    const branch = git(root, ['rev-parse', '--abbrev-ref', 'HEAD'])
+    const dirty = git(root, ['status', '--porcelain'])
+    const remoteUrl = git(root, ['remote', 'get-url', 'origin'])
+    return {
+      ok: true,
+      branch: branch.output || '(none)',
+      dirtyFiles: dirty.output === '' ? 0 : dirty.output.split('\n').length,
+      remote: remoteUrl.ok ? remoteUrl.output : '(none configured)',
+      hint: remoteUrl.ok ? 'memhub sync push / memhub sync pull' : 'memhub sync init --remote <url>',
+    }
+  }
+  if (sub === 'push') {
+    const add = git(root, ['add', '-A'])
+    if (!add.ok) return { ok: false, error: add.output }
+    const commit = git(root, ['commit', '-m', message ?? 'memhub sync: memory update'])
+    const push = git(root, ['push', '-u', 'origin', 'HEAD'])
+    return {
+      ok: push.ok,
+      committed: commit.ok ? 'yes' : 'nothing to commit',
+      pushed: push.ok ? 'yes' : 'no',
+      output: push.output || commit.output,
+      ...(push.ok ? {} : { hint: 'if the remote uses PR review, open a PR from your branch' }),
+    }
+  }
+  if (sub === 'pull') {
+    const pull = git(root, ['pull', '--rebase'])
+    return { ok: pull.ok, output: pull.output }
+  }
+  return { ok: false, error: `unknown sync subcommand: ${sub}` }
 }
 
 function printHelp(): void {
@@ -292,6 +378,11 @@ function printHelp(): void {
   memhub inbox list                   list pending proposals
   memhub inbox approve <PRO-id>       human approval -> knowledge (ledgered)
   memhub inbox reject <PRO-id>        reject with optional --note
+  memhub validate                     extraction validation over knowledge/ + pending/
+                                      (exit 1 on errors — usable as CI gate)
+  memhub sync <status|init|push|pull> [--remote url] [--message text]
+                                      git-first hub sync (ADR-0011): push knowledge to a
+                                      central repo, review via PR, issues for feedback
   memhub tools                        list MCP tool names
   memhub help                         this text
 `)
