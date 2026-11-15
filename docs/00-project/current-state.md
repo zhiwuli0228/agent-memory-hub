@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**✅ 批准即本地提交（2026-11-15 23:05，c2d5498）**：用户确认推送策略=推荐档：**批准后自动 git commit 到本地历史**（细粒度、离线安全），push 保持显式/定时（中心仓提交成批、可审查）。实现：transport/autocommit.ts（git add+commit，非 git 仓库静默 no-op 不阻塞审批），接线全部知识变更动作（approve 面板+CLI、update、deprecate、delete），响应带 git:{committed,detail}。105 测试全绿。**数据流结论**：批准=本地即时生效（knowledge 文件+索引，下次 search/preflight 即命中）；上层中心仓传播发生在 sync push（workflow 定时或手动）→ PR 审查 → merge。控制台运行于 http://127.0.0.1:7777/。
+
 **⏰ 触发器无关萃取协议（2026-11-15 22:35，44ac75a）**：用户修正 ADR-0011 定时萃取设计——**不能绑特定宿主调度器**（"不然不是所有人都用 dsh，直接把路堵死了"），正解是用户的类 MulticA agent-workflow 平台做定时触发。memhub 提供 CLI 协议供任意调度器驱动：`memhub extract material [--since]`（水位线以来 ledger 事件 cap 500 + 85 条目 dedup 上下文 + pending 标题防重复 + instruction 块，纯 JSON 喂平台 agent）→ agent 通用化萃取 → `memhub propose`（supersedes 重萃取）→ 人批准 → `memhub validate` → `memhub sync push` → `memhub extract done`（推进水位线 records/extract-state.json）。平台供模型，memhub 供原料/护栏/写路径。真机闭环验证：全量 500→done→增量 0。103 测试全绿。
 
 **🌐 ADR-0011 Git-first 同步 + 萃取验证闸门（2026-11-15 22:25，f81f2a1）**：用户提出远程仓库记忆协作需求（批准/定时萃取→提交中心仓→MR/issue 式反馈→合入）。查证腾讯 Team Memory：中心化 API 服务，只有 ACL+置信分级，**没有 MR/issue 反馈环**（其官方文档 §6.2 自己承认需要 review/merge 治理）。我们的决策：**hub root 就是 git 仓库**，零自建服务器——`memhub sync status|init|push|pull`（transport 层 spawnSync git，core 不碰 git）；PR=审查/拒绝/意见/合入，issue=条目级反馈；`memhub validate` 萃取验证闸门（契约解析/重复 id/标题冲突/supersedes 目标存在，exit 1 可作本地 pre-push 检查与 CI PR 门禁）；pending/ 不入库（.gitignore）。真机验证干净：85 条目+21 提案 0 错误。99 测试全绿。定时萃取：宿主级 schedule（DSH schedule_create 定时开会话跑萃取流）或 CI 级 GitHub Actions cron，两种配置待用户选定。
