@@ -104,6 +104,30 @@ describe('ADR-0012 hub-to-hub sync', () => {
     expect(otherEntries[0]?.id).toMatch(/^PRC-/)
   })
 
+  it('sync push --branch creates a personal branch for MR review (ADR-0013)', async () => {
+    const { syncCommand } = await import('../src/cli.js')
+    const { spawnSync } = await import('node:child_process')
+    const root = tempHub()
+    commitKnowledge(root, { type: 'process', title: '团队通用流程', summary: 's', scope: { level: 'global' }, tags: [], body: 'b', sourceRefs: ['n'] }, helpers())
+
+    // A local bare repo stands in for the team's git service (real push, no network).
+    const bare = mkdtempSync(join(tmpdir(), 'amh-bare-'))
+    spawnSync('git', ['init', '--bare', bare], { encoding: 'utf8' })
+    spawnSync('git', ['config', 'user.email', 't@t'], { cwd: root, encoding: 'utf8' })
+    spawnSync('git', ['config', 'user.name', 't'], { cwd: root, encoding: 'utf8' })
+
+    expect(syncCommand(root, 'init', bare).ok).toBe(true)
+    const push = syncCommand(root, 'push', undefined, undefined, 'alice')
+    expect(push.pushed).toBe('yes')
+    expect(push.branch).toBe('alice')
+    expect(String(push.nextStep)).toContain('MR')
+    // The branch really exists on the "team git service" and locally.
+    const remoteBranches = spawnSync('git', ['branch', '--list', 'alice'], { cwd: bare, encoding: 'utf8' })
+    expect(remoteBranches.stdout).toContain('alice')
+    const localBranch = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: root, encoding: 'utf8' })
+    expect(localBranch.stdout.trim()).toBe('alice')
+  })
+
   it('a revised push bumps the central version (feedback loop: revise → push again)', async () => {
     const localRoot = tempHub()
     const centralRoot = tempHub()

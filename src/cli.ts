@@ -39,6 +39,7 @@ interface CliArgs {
   remote?: string
   message?: string
   since?: string
+  branch?: string
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -94,6 +95,10 @@ function parseArgs(argv: string[]): CliArgs {
         break
       case '--since':
         args.since = argv[i + 1]
+        i += 1
+        break
+      case '--branch':
+        args.branch = argv[i + 1]
         i += 1
         break
       default:
@@ -324,7 +329,7 @@ export function main(argv: string[]): number {
         const root = requireHub(args)
         const sub = args._[1]
         if (sub === undefined) throw new HubError(ErrorCode.E_VALIDATION, 'usage: memhub sync <status|init|push|pull> [--remote url] [--message text]')
-        const result = syncCommand(root, sub, args.remote, args.message)
+        const result = syncCommand(root, sub, args.remote, args.message, args.branch)
         out(result, args.json)
         return result.ok ? 0 : 1
       }
@@ -495,7 +500,8 @@ export async function hubSync(
 interface KnowledgeScopeLike { level: string; workspaceId?: string; domainId?: string }
 
 /** ADR-0011: the hub root IS a git repository — sync delegates to git. */
-function syncCommand(root: string, sub: string, remote?: string, message?: string): { ok: boolean; [key: string]: unknown } {
+/** Exported for tests: git-backed center sync (ADR-0013). */
+export function syncCommand(root: string, sub: string, remote?: string, message?: string, branch?: string): { ok: boolean; [key: string]: unknown } {
   const inside = git(root, ['rev-parse', '--is-inside-work-tree'])
   if (sub === 'init') {
     if (!inside.ok) {
@@ -526,15 +532,29 @@ function syncCommand(root: string, sub: string, remote?: string, message?: strin
     }
   }
   if (sub === 'push') {
+    // ADR-0013: the center is the team's existing git service. Personal
+    // branch mode (--branch) enables MR review without GitHub specifics:
+    // push the branch, then open the MR on the git service's own UI.
+    if (branch !== undefined) {
+      const hasBranch = git(root, ['rev-parse', '--verify', branch])
+      const switchTo = hasBranch.ok ? git(root, ['checkout', branch]) : git(root, ['checkout', '-b', branch])
+      if (!switchTo.ok) return { ok: false, error: switchTo.output }
+    }
     const add = git(root, ['add', '-A'])
     if (!add.ok) return { ok: false, error: add.output }
     const commit = git(root, ['commit', '-m', message ?? 'memhub sync: memory update'])
-    const push = git(root, ['push', '-u', 'origin', 'HEAD'])
+    const push = branch !== undefined ? git(root, ['push', '-u', 'origin', branch]) : git(root, ['push', '-u', 'origin', 'HEAD'])
     return {
       ok: push.ok,
       committed: commit.ok ? 'yes' : 'nothing to commit',
       pushed: push.ok ? 'yes' : 'no',
+      branch: branch ?? '(current)',
       output: push.output || commit.output,
+      ...(push.ok && branch !== undefined
+        ? { nextStep: `在你的 git 服务上从分支 ${branch} 发起 MR —— 审查意见见 MR，改完再 push 即可；合入后其他人 memhub sync pull 同步` }
+        : push.ok
+          ? { nextStep: '已推送。团队协作建议：memhub sync push --branch <你的名字>，用 git 服务自带的 MR 审查合入' }
+          : {}),
       ...(push.ok ? {} : { hint: 'if the remote uses PR review, open a PR from your branch' }),
     }
   }
@@ -569,9 +589,11 @@ function printHelp(): void {
                                       ADR-0012 hub-to-hub sync: push local approved entries
                                       as central proposals (central inbox = review gate);
                                       pull central-approved entries into local knowledge
-  memhub sync <status|init|push|pull> [--remote url] [--message text]
-                                      optional git backup of the hub directory (ADR-0011,
-                                      demoted to disaster recovery by ADR-0012)
+  memhub sync <status|init|push|pull> [--remote url] [--message text] [--branch name]
+                                      THE center: publish knowledge to the team's existing
+                                      git service (no dedicated server, ADR-0013); --branch
+                                      pushes a personal branch for MR review on the git UI;
+                                      serve stays local-only (inbox/browser/audit)
   memhub tools                        list MCP tool names
   memhub help                         this text
 `)
