@@ -66,6 +66,39 @@ describe('DSH adapter registration', () => {
     expect(host.logs.some((log) => log.includes('not initialized'))).toBe(true)
   })
 
+  it('toolConflict=skip keeps the existing registration (predecessor coexistence)', () => {
+    const root = seededRoot()
+    process.chdir(root)
+    const host = mockHost()
+    host.tools.set('memory_search', {
+      name: 'memory_search',
+      description: 'predecessor tool',
+      parameters: {},
+      execute: () => ({}),
+    })
+    apply(host.ctx, { root, toolConflict: 'skip' })
+    // The predecessor's memory_search survives untouched.
+    expect(host.tools.get('memory_search')?.description).toBe('predecessor tool')
+    // Ours land only for non-conflicting names.
+    expect(host.tools.has('memory_preflight')).toBe(true)
+    expect(host.logs.some((log) => log.includes('skipping'))).toBe(true)
+  })
+
+  it('toolConflict=suffix renames ours to <name>__amh', () => {
+    const root = seededRoot()
+    process.chdir(root)
+    const host = mockHost()
+    host.tools.set('memory_search', {
+      name: 'memory_search',
+      description: 'predecessor tool',
+      parameters: {},
+      execute: () => ({}),
+    })
+    apply(host.ctx, { root, toolConflict: 'suffix' })
+    expect(host.tools.get('memory_search')?.description).toBe('predecessor tool')
+    expect(host.tools.has('memory_search__amh')).toBe(true)
+  })
+
   it('tool shells execute against real core (propose -> inbox-visible)', async () => {
     const root = seededRoot()
     process.chdir(root)

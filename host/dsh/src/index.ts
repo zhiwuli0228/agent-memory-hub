@@ -22,11 +22,25 @@ export function apply(ctx: HostContext, config?: AdapterConfig): void {
     return
   }
   const hubCtx = createHubContext(config)
+  const conflict = config?.toolConflict ?? 'skip'
   const disposers: Array<() => void> = []
   for (const definition of createTools(hubCtx)) {
     const { run, ...rest } = definition
+    let toolName = rest.name
+    const existing = ctx.tools.get(toolName)
+    if (existing !== undefined) {
+      if (conflict === 'skip') {
+        ctx.logger?.warn(
+          `agent-memory-hub-dsh: tool ${toolName} already registered by host or another plugin; skipping (toolConflict: skip)`,
+        )
+        continue
+      }
+      toolName = `${toolName}__amh`
+      ctx.logger?.warn(`agent-memory-hub-dsh: tool name collision — registered as ${toolName} (toolConflict: suffix)`)
+    }
     const tool: ToolDefinition = {
       ...rest,
+      name: toolName,
       execute: (args) => run(args),
     }
     disposers.push(ctx.tools.register(tool))

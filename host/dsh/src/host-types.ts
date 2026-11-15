@@ -27,6 +27,12 @@ export interface HostContext {
 export interface AdapterConfig {
   /** Hub root directory. Empty/missing = $MEMHUB_ROOT or the process cwd. */
   root?: string
+  /**
+   * What to do when a tool name is already registered (host or another
+   * plugin — e.g. the predecessor dsh-memory-hub): 'skip' (default) drops
+   * ours and keeps the existing one; 'suffix' renames ours to `<name>__amh`.
+   */
+  toolConflict?: 'skip' | 'suffix'
 }
 
 export function resolveHubRoot(config?: AdapterConfig): string {
