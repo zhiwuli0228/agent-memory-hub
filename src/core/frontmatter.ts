@@ -120,8 +120,15 @@ function parseScope(lines: string[], start: number): { scope: KnowledgeScope; ne
  * Parse a knowledge file's frontmatter into the contract type.
  * Throws with a descriptive message on contract violations (id/type/status
  * missing or invalid) — the caller decides how to surface the error.
+ *
+ * `context: 'proposal'` relaxes the contract for pending-proposal files:
+ * predecessor-era proposals carry `status: pending` and no version (assigned
+ * at commit time), both of which are legacy aliases mapped here.
  */
-export function parseKnowledgeFrontmatter(raw: string): KnowledgeFrontmatter {
+export function parseKnowledgeFrontmatter(
+  raw: string,
+  options?: { context?: 'entry' | 'proposal' },
+): KnowledgeFrontmatter {
   const split = splitFrontmatter(raw)
   if (split === null) {
     throw new Error('knowledge file must start with a `---` frontmatter block')
@@ -156,8 +163,34 @@ export function parseKnowledgeFrontmatter(raw: string): KnowledgeFrontmatter {
         index += 1
         continue
       }
-      if (key === 'tags') {
-        scalars.set('tags', value === '[]' ? '[]' : parseScalar(value))
+      if (key === 'tags' || key === 'source_refs') {
+        if (value === '') {
+          // Legacy block-style list: `key:` followed by indented `- item` lines.
+          const items: string[] = []
+          let cursor = index + 1
+          while (cursor < lines.length) {
+            const item = lines[cursor]
+            if (item === undefined || !/^\s+-\s/.test(item)) break
+            items.push(item.replace(/^\s+-\s*/, '').trim())
+            cursor += 1
+          }
+          if (items.length > 0) {
+            if (key === 'tags') {
+              // Re-encode into the inline `[a, b]` convention parseInlineArray expects.
+              scalars.set('tags', `[${items.join(', ')}]`)
+            } else {
+              // Match the renderer's single-line convention (join with spaces).
+              const joined = items.join(' ')
+              scalars.set('source_refs', joined)
+              extra['source_refs'] = joined
+            }
+            index = cursor
+            continue
+          }
+        }
+        const parsedValue = value === '[]' ? '[]' : parseScalar(value)
+        scalars.set(key, parsedValue)
+        if (key === 'source_refs') extra['source_refs'] = parsedValue
         index += 1
         continue
       }
@@ -176,11 +209,22 @@ export function parseKnowledgeFrontmatter(raw: string): KnowledgeFrontmatter {
   if (typeof type !== 'string' || !KNOWLEDGE_TYPES.includes(type as KnowledgeType)) {
     throw new Error(`frontmatter has invalid \`type\`: ${String(type)}`)
   }
-  const status = scalars.get('status')
+  const rawStatus = scalars.get('status')
+  // Legacy alias: predecessor-era pending proposals carry `status: pending` —
+  // the same concept as the new `candidate` status.
+  const status = rawStatus === 'pending' ? 'candidate' : rawStatus
   if (typeof status !== 'string' || !KNOWLEDGE_STATUSES.includes(status as KnowledgeStatus)) {
     throw new Error(`frontmatter has invalid \`status\`: ${String(status)}`)
   }
-  const version = scalars.get('version')
+  const versionRaw = scalars.get('version')
+  // Proposal context: predecessor-era pending files carry no version — the
+  // version is assigned at commit time, so default to 1.
+  const version =
+    typeof versionRaw === 'number'
+      ? versionRaw
+      : options?.context === 'proposal'
+        ? 1
+        : (undefined as unknown as number)
   if (typeof version !== 'number') throw new Error('frontmatter missing numeric `version`')
   const title = scalars.get('title')
   if (typeof title !== 'string' || title === '') throw new Error('frontmatter missing `title`')
@@ -238,6 +282,13 @@ function asOptionalString(value: string | number | boolean | undefined): string 
 }
 
 function parseInlineArrayOrScalarAsScope(value: string): KnowledgeScope {
+  // Legacy bare shorthand: `scope: project:<id>` / `scope: domain:<id>` / `scope: global`.
+  const bare = /^(global|domain:([\w.-]+)|project:([\w.-]+))$/.exec(value)
+  if (bare !== null) {
+    if (bare[1] === 'global') return { level: 'global' }
+    if (bare[2] !== undefined) return { level: 'domain', domainId: bare[2] }
+    if (bare[3] !== undefined) return { level: 'project', workspaceId: bare[3] }
+  }
   // Accept `{level: global}` style inline maps for the global case only.
   if (/level:\s*global/.test(value)) return { level: 'global' }
   if (/level:\s*domain/.test(value)) {

@@ -47,6 +47,16 @@ describe.skipIf(!available)('min_score replay calibration on real citations', ()
     // Indexable = pairs whose cited entry is still present (not deprecated/gone).
     const indexed = pairs.filter((pair) => index.docs.has(pair.expectedId))
 
+    // Replay each citation in the workspace context it actually happened in:
+    // the cited entry's own scope (project:<id> or global). Parsing now honours
+    // legacy `scope: project:<id>` shorthands, so a single hardcoded workspace
+    // would wrongly hide over half the pool behind visibility filtering.
+    const workspaceOf = (id: string): string => {
+      const doc = index.docs.get(id)
+      const scope = doc?.entry.frontmatter.scope
+      return scope?.level === 'project' ? scope.workspaceId : 'dsh-plugin-dev'
+    }
+
     const table: Array<{ minScore: number; retention: number; avgHits: number; hitAt1: number; hitAt3: number }> = []
     for (const minScore of [0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]) {
       let retained = 0
@@ -54,7 +64,7 @@ describe.skipIf(!available)('min_score replay calibration on real citations', ()
       let hitAt1 = 0
       let hitAt3 = 0
       for (const pair of indexed) {
-        const hits = search(index, pair.query, { workspaceId: 'dsh-memory-hub', minScore, detail: 'L0' })
+        const hits = search(index, pair.query, { workspaceId: workspaceOf(pair.expectedId), minScore, detail: 'L0' })
         totalHits += hits.length
         const ids = hits.map((hit) => hit.id)
         if (ids[0] === pair.expectedId) hitAt1 += 1
@@ -84,7 +94,7 @@ describe.skipIf(!available)('min_score replay calibration on real citations', ()
     // distribution (reproduces predecessor P0-1: absolute AND relative
     // thresholds both fail). The working denoising mechanism is top-k truncation:
     const top3 = indexed.filter((pair) => {
-      const hits = search(index, pair.query, { workspaceId: 'dsh-memory-hub', limit: 3, detail: 'L0' })
+      const hits = search(index, pair.query, { workspaceId: workspaceOf(pair.expectedId), limit: 3, detail: 'L0' })
       return hits.some((hit) => hit.id === pair.expectedId)
     }).length
     const top3Retention = top3 / indexed.length

@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ErrorCode, HubError } from './core/errors.js'
@@ -30,6 +31,7 @@ interface CliArgs {
   channel?: string
   note?: string
   port?: number
+  open?: boolean
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -72,6 +74,9 @@ function parseArgs(argv: string[]): CliArgs {
         args.port = Number(argv[i + 1])
         i += 1
         break
+      case '--no-open':
+        args.open = false
+        break
       default:
         args._.push(arg)
     }
@@ -79,8 +84,18 @@ function parseArgs(argv: string[]): CliArgs {
   return args
 }
 
-function out(value: unknown, json?: boolean): void {
-  if (json) {
+/** Open the URL in the OS default browser (best effort, never throws). */
+function openInBrowser(url: string): void {
+  const command = process.platform === 'win32' ? 'cmd' : process.platform === 'darwin' ? 'open' : 'xdg-open'
+  const spawnArgs = process.platform === 'win32' ? ['/c', 'start', '', url] : [url]
+  try {
+    spawn(command, spawnArgs, { detached: true, stdio: 'ignore' }).unref()
+  } catch {
+    console.error(`(自动打开浏览器失败：请手动访问 ${url})`)
+  }
+}
+
+function out(value: unknown, json?: boolean): void {  if (json) {
     console.log(JSON.stringify(value, null, 2))
   } else {
     console.log(JSON.stringify(value, null, 2))
@@ -136,7 +151,18 @@ export function main(argv: string[]): number {
         const server = startServer(state, { port })
         // Port 0 resolves asynchronously — print inside the listening event.
         server.on('listening', () => {
-          console.error(`memhub console: ${serverUrl(server)}  (hub: ${root})`)
+          const url = serverUrl(server)
+          console.error(`memhub console: ${url}  (hub: ${root})`)
+          console.error('保持此终端窗口开启 —— 关闭终端即停止控制台。按 Ctrl+C 退出。')
+          if (args.open !== false) openInBrowser(url)
+        })
+        server.on('error', (error: NodeJS.ErrnoException) => {
+          if (error.code === 'EADDRINUSE') {
+            console.error(`[EADDRINUSE] 端口 ${port} 已被占用 —— 换一个端口：memhub serve --port 8080`)
+          } else {
+            console.error(`[serve error] ${error.message}`)
+          }
+          process.exit(1)
         })
         const shutdown = () => {
           server.close()
@@ -256,7 +282,9 @@ function printHelp(): void {
 
   memhub init --root <dir>            initialize a hub directory
   memhub mcp --root <dir>             start the MCP stdio server
-  memhub serve --root <dir> [--port n] start the web console (127.0.0.1, inbox + knowledge browser + audit)
+  memhub serve --root <dir> [--port n] [--no-open]
+                                      start the web console (auto-opens your browser;
+                                      inbox + knowledge browser + audit; Ctrl+C stops)
   memhub search <query>               search accepted knowledge
       [--detail L0|L1|L2] [--limit n] [--workspace id] [--json]
   memhub get <ID> [--full]            read one entry

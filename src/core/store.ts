@@ -314,7 +314,7 @@ export function listProposals(root: string): Array<{ id: string; frontmatter: Kn
     if (!file.endsWith('.md')) continue
     const path = join(dir, file)
     try {
-      const fm = parseKnowledgeFrontmatter(readFileSync(path, 'utf8'))
+      const fm = parseKnowledgeFrontmatter(readFileSync(path, 'utf8'), { context: 'proposal' })
       out.push({ id: fm.id, frontmatter: fm, path })
     } catch {
       // skip unreadable candidate
