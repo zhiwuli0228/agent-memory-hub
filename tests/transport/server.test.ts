@@ -1,4 +1,5 @@
 import { existsSync, mkdtempSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -256,6 +257,35 @@ describe('panel API', () => {
       expect(results[0]?.knowledgeId).toBe(targetId)
       expect(results[0]?.version).toBe(2)
       expect((handleApi(state, 'GET', '/api/entries').body as { entries: unknown[] }).entries).toHaveLength(1)
+    })
+
+    it('approval auto-commits locally when the hub root is a git repo (push stays explicit)', () => {
+      const { state, root } = seededState()
+      // Turn the temp hub into a repo with an identity so commits can run.
+      spawnSync('git', ['init'], { cwd: root })
+      spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root })
+      spawnSync('git', ['config', 'user.name', 'Test'], { cwd: root })
+      const id = propose(root, 'knowledge', '自动提交验证', '批准即进本地 git 历史')
+      const response = handleApi(state, 'POST', `/api/inbox/${id}/approve`)
+      expect(response.status).toBe(200)
+      const results = (response.body as { results: Array<{ git?: { committed?: boolean } }> }).results
+      expect(results[0]?.git?.committed).toBe(true)
+      const log = spawnSync('git', ['log', '--oneline'], { cwd: root, encoding: 'utf8' })
+      expect(log.stdout).toContain('approve:')
+      // Nothing is pushed: local history only.
+      const remote = spawnSync('git', ['remote'], { cwd: root, encoding: 'utf8' })
+      expect(remote.stdout.trim()).toBe('')
+    })
+
+    it('approval without a git repo degrades gracefully (no commit, approval still succeeds)', () => {
+      const { state } = seededState()
+      const id = propose(state.hubRoot, 'knowledge', '无仓批准', '非 git hub 不应阻塞审批')
+      const response = handleApi(state, 'POST', `/api/inbox/${id}/approve`)
+      expect(response.status).toBe(200)
+      const results = (response.body as { results: Array<{ knowledgeId?: string; git?: { committed?: boolean; detail?: string } }> }).results
+      expect(results[0]?.knowledgeId).toBeDefined()
+      expect(results[0]?.git?.committed).toBe(false)
+      expect(results[0]?.git?.detail).toContain('not a git repository')
     })
   })
 })

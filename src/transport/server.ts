@@ -8,6 +8,7 @@ import { buildIndex, emptyMetrics, search, type SearchIndex, type SearchMetrics 
 import { resolveWorkspace, type ResolvedWorkspace } from '../core/registry.js'
 import { readJournal } from '../core/journal.js'
 import { readLedger } from '../core/ledger.js'
+import { autoCommit } from './autocommit.js'
 import type { KnowledgeType } from '../core/types.js'
 
 /**
@@ -69,7 +70,7 @@ function withWriteLock<T>(hubRoot: string, fn: () => T): T {
   }
 }
 
-function commitOne(hubRoot: string, proposalId: string, note?: string): { knowledgeId: string; version: number; superseded?: string } {
+function commitOne(hubRoot: string, proposalId: string, note?: string): { knowledgeId: string; version: number; superseded?: string; git: { committed: boolean; detail?: string } } {
   const proposal = listProposals(hubRoot).find((p) => p.id === proposalId)
   if (proposal === undefined) {
     throw new HubError(ErrorCode.E_NOT_FOUND, `pending proposal not found: ${proposalId}`, { proposalId })
@@ -103,7 +104,8 @@ function commitOne(hubRoot: string, proposalId: string, note?: string): { knowle
     note,
     at: new Date().toISOString(),
   })
-  return { knowledgeId: committed.id, version: committed.version, ...(superseding ? { superseded: targetId } : {}) }
+  const gitCommit = autoCommit(hubRoot, `approve: ${committed.id}@v${committed.version} ${proposal.frontmatter.title}`)
+  return { knowledgeId: committed.id, version: committed.version, ...(superseding ? { superseded: targetId } : {}), git: gitCommit }
 }
 
 function existsSyncSafe(hubRoot: string, id: string): boolean {
@@ -205,7 +207,7 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
         })
         state.index = buildIndex(state.hubRoot, () => new Date().toISOString())
         state.metrics = emptyMetrics(state.index)
-        return ok({ deprecated: deprecateMatch[1] ?? '', reason })
+        return ok({ deprecated: deprecateMatch[1] ?? '', reason, git: autoCommit(state.hubRoot, `deprecate: ${deprecateMatch[1]} (${reason})`) })
       })
     }
     const deleteMatch = /^\/api\/entries\/([A-Za-z0-9-]+)\/delete$/.exec(path)
@@ -217,7 +219,7 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
         })
         state.index = buildIndex(state.hubRoot, () => new Date().toISOString())
         state.metrics = emptyMetrics(state.index)
-        return ok({ deleted: deleteMatch[1] ?? '', reason })
+        return ok({ deleted: deleteMatch[1] ?? '', reason, git: autoCommit(state.hubRoot, `delete: ${deleteMatch[1]} (${reason})`) })
       })
     }
     const updateMatch = /^\/api\/entries\/([A-Za-z0-9-]+)\/update$/.exec(path)
@@ -243,7 +245,7 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
         )
         state.index = buildIndex(state.hubRoot, () => new Date().toISOString())
         state.metrics = emptyMetrics(state.index)
-        return ok({ updated: updated.id, version: updated.version })
+        return ok({ updated: updated.id, version: updated.version, git: autoCommit(state.hubRoot, `update: ${updated.id}@v${updated.version}`) })
       })
     }
     return bad(404, `no route: ${method} ${path}`)
@@ -277,12 +279,12 @@ function approve(state: ApiState, ids: string[], body?: Record<string, unknown>)
   }
   const note = typeof body?.['note'] === 'string' ? body['note'] : undefined
   return withWriteLock(state.hubRoot, () => {
-    const results: Array<{ proposalId: string; knowledgeId?: string; version?: number; error?: string }> = []
+    const results: Array<{ proposalId: string; knowledgeId?: string; version?: number; superseded?: string; git?: { committed: boolean; detail?: string }; error?: string }> = []
     let firstError: HubError | null = null
     for (const id of ids) {
       try {
         const committed = commitOne(state.hubRoot, id, note)
-        results.push({ proposalId: id, knowledgeId: committed.knowledgeId, version: committed.version })
+        results.push({ proposalId: id, knowledgeId: committed.knowledgeId, version: committed.version, ...(committed.superseded !== undefined ? { superseded: committed.superseded } : {}), git: committed.git })
       } catch (error) {
         if (error instanceof HubError && firstError === null) firstError = error
         results.push({ proposalId: id, error: error instanceof Error ? error.message : String(error) })

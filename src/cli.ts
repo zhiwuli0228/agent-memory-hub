@@ -13,6 +13,7 @@ import { commitKnowledge, getEntry, listEntries, listProposals } from './core/st
 import { validateHub } from './core/validate.js'
 import { requireApproval } from './core/approval.js'
 import { createApiState } from './transport/server.js'
+import { autoCommit } from './transport/autocommit.js'
 import { startServer, serverUrl } from './transport/http.js'
 import { createState, handleRpc, serveStdio, TOOLS, type TransportState } from './transport/mcp.js'
 import { buildExtractionMaterial, readExtractState, writeExtractState } from './core/extract.js'
@@ -270,7 +271,8 @@ export function main(argv: string[]): number {
             { readSequences, writeSequences, appendLedger: humanLedger },
           )
           humanLedger(root, { type: 'proposal.committed', proposalId, knowledgeId: committed.id, channel: 'cli-human', at: new Date().toISOString() })
-          out({ knowledgeId: committed.id, version: committed.version, path: committed.path }, true)
+          const gitCommit = autoCommit(root, `approve: ${committed.id}@v${committed.version} ${proposal.frontmatter.title}`)
+          out({ knowledgeId: committed.id, version: committed.version, path: committed.path, git: gitCommit }, true)
           return 0
         } finally {
           releaseLock(root, acquired.lock?.token ?? '')
