@@ -69,14 +69,20 @@ function withWriteLock<T>(hubRoot: string, fn: () => T): T {
   }
 }
 
-function commitOne(hubRoot: string, proposalId: string, note?: string): { knowledgeId: string; version: number } {
+function commitOne(hubRoot: string, proposalId: string, note?: string): { knowledgeId: string; version: number; superseded?: string } {
   const proposal = listProposals(hubRoot).find((p) => p.id === proposalId)
   if (proposal === undefined) {
     throw new HubError(ErrorCode.E_NOT_FOUND, `pending proposal not found: ${proposalId}`, { proposalId })
   }
+  // Re-extraction: a proposal carrying extra.supersedes upgrades that entry's
+  // version instead of creating a duplicate (ADR-0010 re-extraction loop).
+  const rawSupersedes = proposal.frontmatter.extra['supersedes']
+  const targetId = typeof rawSupersedes === 'string' && rawSupersedes !== '' ? rawSupersedes.split(/\s+/)[0] : undefined
+  const superseding = targetId !== undefined && existsSyncSafe(hubRoot, targetId)
   const committed = commitKnowledge(
     hubRoot,
     {
+      ...(superseding ? { id: targetId } : {}),
       type: proposal.frontmatter.type,
       title: proposal.frontmatter.title,
       summary: proposal.frontmatter.summary,
@@ -92,11 +98,21 @@ function commitOne(hubRoot: string, proposalId: string, note?: string): { knowle
     type: 'proposal.committed',
     proposalId,
     knowledgeId: committed.id,
+    ...(superseding ? { supersedes: targetId } : {}),
     channel: 'panel',
     note,
     at: new Date().toISOString(),
   })
-  return { knowledgeId: committed.id, version: committed.version }
+  return { knowledgeId: committed.id, version: committed.version, ...(superseding ? { superseded: targetId } : {}) }
+}
+
+function existsSyncSafe(hubRoot: string, id: string): boolean {
+  try {
+    getEntry(hubRoot, id)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Route one API request. `body` is the parsed JSON body or undefined. */
@@ -202,6 +218,32 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
         state.index = buildIndex(state.hubRoot, () => new Date().toISOString())
         state.metrics = emptyMetrics(state.index)
         return ok({ deleted: deleteMatch[1] ?? '', reason })
+      })
+    }
+    const updateMatch = /^\/api\/entries\/([A-Za-z0-9-]+)\/update$/.exec(path)
+    if (updateMatch !== null && method === 'POST') {
+      const existing = getEntry(state.hubRoot, updateMatch[1] ?? '')
+      const summary = typeof body?.['summary'] === 'string' && body['summary'] !== '' ? body['summary'] : existing.frontmatter.summary
+      const nextBody = typeof body?.['body'] === 'string' ? body['body'] : existing.body
+      const tags = Array.isArray(body?.['tags']) ? (body?.['tags'] as string[]).map(String) : existing.frontmatter.tags
+      return withWriteLock(state.hubRoot, () => {
+        const updated = commitKnowledge(
+          state.hubRoot,
+          {
+            id: existing.frontmatter.id,
+            type: existing.frontmatter.type,
+            title: existing.frontmatter.title,
+            summary,
+            scope: existing.frontmatter.scope,
+            tags,
+            body: nextBody,
+            actor: 'panel',
+          },
+          { readSequences, writeSequences, appendLedger: (root, record) => appendLedger(ledgerPath(root), record) },
+        )
+        state.index = buildIndex(state.hubRoot, () => new Date().toISOString())
+        state.metrics = emptyMetrics(state.index)
+        return ok({ updated: updated.id, version: updated.version })
       })
     }
     return bad(404, `no route: ${method} ${path}`)

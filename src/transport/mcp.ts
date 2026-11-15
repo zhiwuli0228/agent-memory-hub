@@ -149,7 +149,7 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   memory_propose: {
     description:
-      'Create a pending candidate (pending/PRO-*.md). This NEVER writes knowledge/ directly — a human must approve via the panel or `memhub inbox`. Always include sourceRefs evidence.',
+      'Create a pending candidate (pending/PRO-*.md). This NEVER writes knowledge/ directly — a human must approve via the panel or `memhub inbox`. Always include sourceRefs evidence. To RE-EXTRACT an existing entry (e.g. generalize an environment-specific flow), pass supersedes: [entryId] — approval upgrades that entry\'s version instead of creating a duplicate.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -162,11 +162,13 @@ export const TOOLS: Record<string, ToolDef> = {
         tags: { type: 'array', items: { type: 'string' } },
         body: { type: 'string' },
         sourceRefs: { type: 'array', items: { type: 'string' } },
+        supersedes: { type: 'array', items: { type: 'string' }, description: 'Entry id(s) this proposal re-extracts; approval upgrades their version.' },
       },
       required: ['type', 'title', 'summary', 'body'],
     },
     handler: (state, args) =>
       withWriteLock(state, () => {
+        const supersedes = args['supersedes'] as string[] | undefined
         const proposal = createProposal(
           state.hubRoot,
           {
@@ -177,6 +179,7 @@ export const TOOLS: Record<string, ToolDef> = {
             tags: args['tags'] as string[] | undefined,
             body: String(args['body']),
             sourceRefs: (args['sourceRefs'] as string[] | undefined) ?? [],
+            ...(supersedes !== undefined && supersedes.length > 0 ? { supersedes } : {}),
             actor: 'model',
           },
           {

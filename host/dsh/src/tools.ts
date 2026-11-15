@@ -175,7 +175,7 @@ export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (arg
   define({
     name: 'memory_propose',
     description:
-      'Create a pending candidate (pending/PRO-*.md). This NEVER writes knowledge/ directly — a human must approve via the serve panel or `memhub inbox`. Always include sourceRefs evidence.',
+      'Create a pending candidate (pending/PRO-*.md). This NEVER writes knowledge/ directly — a human must approve via the serve panel or `memhub inbox`. Always include sourceRefs evidence. To RE-EXTRACT an existing entry (e.g. generalize an environment-specific flow into a universal one), pass supersedes: [entryId] — approval then bumps that entry\'s version instead of creating a duplicate.',
     parameters: {
       type: 'object',
       properties: {
@@ -185,6 +185,7 @@ export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (arg
         tags: { type: 'array', items: { type: 'string' } },
         body: { type: 'string' },
         sourceRefs: { type: 'array', items: { type: 'string' } },
+        supersedes: { type: 'array', items: { type: 'string' }, description: 'Entry id(s) this proposal re-extracts; approval upgrades their version.' },
       },
       required: ['type', 'title', 'summary', 'body'],
     },
@@ -194,6 +195,7 @@ export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (arg
       const token = acquired.lock?.token ?? ''
       try {
         hub.assertFencing(ctx.root, token)
+        const supersedes = args['supersedes'] as string[] | undefined
         const proposal = hub.createProposal(
           ctx.root,
           {
@@ -204,6 +206,7 @@ export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (arg
             tags: args['tags'] as string[] | undefined,
             body: String(args['body']),
             sourceRefs: (args['sourceRefs'] as string[] | undefined) ?? [],
+            ...(supersedes !== undefined && supersedes.length > 0 ? { supersedes } : {}),
             actor: 'model',
           },
           {

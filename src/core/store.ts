@@ -267,10 +267,12 @@ export function hardDeleteEntry(
   rmSync(entry.path, { force: true })
 }
 
-/** Create a pending candidate (models may do this; humans approve via commitKnowledge). */
+/** Create a pending candidate (models may do this; humans approve via commitKnowledge).
+ * `supersedes` names an existing entry this proposal re-extracts: approving it
+ * bumps that entry's version instead of creating a duplicate. */
 export function createProposal(
   root: string,
-  input: Omit<SaveKnowledgeInput, 'id'> & { sourceRefs: string[] },
+  input: Omit<SaveKnowledgeInput, 'id'> & { sourceRefs: string[]; supersedes?: string[] },
   helpers: {
     nowIsoValue?: string
     readSequences: (root: string) => Record<string, number>
@@ -291,7 +293,10 @@ export function createProposal(
     tags: input.tags ?? [],
     created: ts,
     updated: ts,
-    extra: { source_refs: input.sourceRefs.join(' ') },
+    extra: {
+      source_refs: input.sourceRefs.join(' '),
+      ...(input.supersedes !== undefined && input.supersedes.length > 0 ? { supersedes: input.supersedes.join(' ') } : {}),
+    },
   }
   const path = join(pendingDir(root), `${proposalId}.md`)
   atomicWrite(path, renderKnowledgeMarkdown(fm, input.body))
@@ -301,6 +306,7 @@ export function createProposal(
     action: 'propose',
     id: proposalId,
     source_refs: input.sourceRefs,
+    ...(input.supersedes !== undefined && input.supersedes.length > 0 ? { supersedes: input.supersedes } : {}),
   })
   return { id: proposalId, path }
 }

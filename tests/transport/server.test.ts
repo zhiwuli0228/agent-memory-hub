@@ -208,5 +208,54 @@ describe('panel API', () => {
       expect(Array.isArray((journal.body as { entries: unknown[] }).entries)).toBe(true)
       void root
     })
+
+    it('update route saves a new version (old snapshot goes to history/)', () => {
+      const { state, root } = seededState()
+      const id = propose(root, 'knowledge', '将通用化', '流程绑定 oracle1 环境')
+      handleApi(state, 'POST', `/api/inbox/${id}/approve`)
+      const committed = (handleApi(state, 'GET', '/api/entries').body as { entries: Array<{ id: string }> }).entries[0]?.id
+      const response = handleApi(state, 'POST', `/api/entries/${committed}/update`, {
+        summary: '通用环境登录部署流程',
+        body: '适用于任意目标环境的登录与部署流程，环境差异通过变量注入。',
+      })
+      expect(response.status).toBe(200)
+      const body = response.body as { updated: string; version: number }
+      expect(body.updated).toBe(committed)
+      expect(body.version).toBe(2)
+      const detail = handleApi(state, 'GET', `/api/entries/${committed}`)
+      expect((detail.body as { frontmatter: { summary: string }; body: string }).frontmatter.summary).toContain('通用')
+      expect(existsSync(join(root, 'history', 'knowledge', `${committed}@v1.md`))).toBe(true)
+    })
+
+    it('approving a proposal with supersedes upgrades the target version (re-extraction loop)', () => {
+      const { state, root } = seededState()
+      const id = propose(root, 'knowledge', '原始条目', '绑定具体环境的流程 v1')
+      handleApi(state, 'POST', `/api/inbox/${id}/approve`)
+      const targetId = (handleApi(state, 'GET', '/api/entries').body as { entries: Array<{ id: string }> }).entries[0]?.id
+      // Model proposes a generalized re-extraction bound to the original entry.
+      createProposal(
+        root,
+        {
+          type: 'knowledge',
+          title: '通用环境登录部署流程',
+          summary: '任意环境的登录与部署通用流程',
+          scope: { level: 'project', workspaceId: 'acme-app' },
+          tags: [],
+          body: '通用流程正文',
+          sourceRefs: ['note:re-extract'],
+          actor: 'model',
+          supersedes: [targetId ?? ''],
+        },
+        ledgerHelpers(),
+      )
+      const pending = (handleApi(state, 'GET', '/api/inbox').body as { proposals: Array<{ id: string }> }).proposals[0]?.id
+      const response = handleApi(state, 'POST', `/api/inbox/${pending}/approve`)
+      expect(response.status).toBe(200)
+      const results = (response.body as { results: Array<{ knowledgeId?: string; version?: number }> }).results
+      // Same id, bumped version — no duplicate entry created.
+      expect(results[0]?.knowledgeId).toBe(targetId)
+      expect(results[0]?.version).toBe(2)
+      expect((handleApi(state, 'GET', '/api/entries').body as { entries: unknown[] }).entries).toHaveLength(1)
+    })
   })
 })

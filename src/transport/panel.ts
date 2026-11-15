@@ -145,12 +145,35 @@ async function openEntry(id) {
       <h3>\${esc(fm.title)} <span class="status-tag">\${esc(fm.status)}</span></h3>
       <div class="meta">\${esc(fm.id)}@v\${fm.version} · \${esc(fm.type)} · \${esc(JSON.stringify(fm.scope))} · \${esc((fm.tags ?? []).join(', '))}</div>
       <div class="meta">path: \${esc(r.data.path)}</div>
-      <pre>\${esc(r.data.body)}</pre>
+      <pre id="entry-body">\${esc(r.data.body)}</pre>
       <div class="row">
+        <button class="primary" onclick="editEntry('\${esc(id)}')">编辑（重新萃取）</button>
         <button class="danger" onclick="deprecateEntry('\${esc(id)}')">废弃（软删除）</button>
         <button class="danger" onclick="hardDeleteEntry('\${esc(id)}')">永久删除（不可恢复）</button>
       </div>
     </div>\`;
+}
+async function editEntry(id) {
+  const r = await j('/api/entries/' + id);
+  if (!r.ok) { alert('加载失败: ' + (r.data.error ?? r.status)); return; }
+  const fm = r.data.frontmatter ?? {};
+  document.getElementById('entrydetail').innerHTML = \`
+    <div class="card">
+      <h3>编辑 \${esc(fm.id)}（保存 = v\${(fm.version ?? 1) + 1}，旧版本进 history/）</h3>
+      <div class="meta">标题与类型不可改；摘要与正文通用化改写后保存即重新萃取。</div>
+      <div style="margin:8px 0"><label>摘要</label><br><textarea id="edit-summary" rows="3" style="width:98%">\${esc(fm.summary)}</textarea></div>
+      <div style="margin:8px 0"><label>正文</label><br><textarea id="edit-body" rows="14" style="width:98%;font-family:monospace">\${esc(r.data.body)}</textarea></div>
+      <div class="row">
+        <button class="primary" onclick="saveEntry('\${esc(id)}')">保存为新版本</button>
+        <button onclick="openEntry('\${esc(id)}')">取消</button>
+      </div>
+    </div>\`;
+}
+async function saveEntry(id) {
+  const payload = { summary: document.getElementById('edit-summary').value, body: document.getElementById('edit-body').value };
+  const r = await j('/api/entries/' + id + '/update', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(payload) });
+  if (r.ok) { document.getElementById('entrydetail').innerHTML = '<div class="card">✓ 已保存 ' + esc(r.data.updated) + '@v' + esc(r.data.version) + '（旧版本进 history/，账本已记录）</div>'; loadEntries(); }
+  else alert('失败: ' + (r.data.error ?? r.status));
 }
 async function deprecateEntry(id) {
   if (!confirm('确认废弃 ' + id + '？（status=deprecated，可追溯）')) return;
