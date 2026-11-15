@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**🔁 重新萃取闭环（2026-11-15 22:05，0572539）**：用户提出萃取质量问题（"想要通用环境登录部署流程，萃取出来绑定了环境"）→ 重新萃取成为一等公民，两条快速路径共用既有版本升级机制（旧版本快照进 history/、version+1、账本记录）：(1) **管理台编辑**——条目详情加"编辑（重新萃取）"，摘要/正文 textarea 保存即新版本（POST /api/entries/:id/update，写锁+panel 账本）；(2) **模型协作**——memory_propose 加 `supersedes: [entryId]`（薄包+MCP schema 同步），提案绑定目标条目，**批准时原地升级版本而非产生重复条目**，账本记 supersedes。101 测试全绿（core 94 + host 7），薄包已重打包（42KB）待宿主更新生效。控制台运行于 http://127.0.0.1:7777/。
+
 **🔧 控制台可用性修复 + legacy pending 全兼容（2026-11-15 21:45，dd57f17）**：用户报告界面打不开 → 诊断 = serve 进程未存活（无端口冲突）→ 修复三件套：serve **自动开浏览器**（--no-open 可关）、EADDRINUSE 友好提示、关闭终端即停服务的明示。**真机 serve 发现 inbox 只显示 1/21 条 pending** → legacy 格式四连修：`status: pending`→candidate 别名映射、proposal 上下文 version 缺省 1、block-style YAML（缩进 `- item` 的 tags/source_refs）收集重编码、`scope: project:<id>` 裸简写解析——**21/21 全部可解析**，控制台收件箱全量可见。回放测试随之修正语义（按被引条目自身 workspace 回放，替代硬编码 workspace）——**top-3 retention 93.2%→94.9%（更优）**。**99 测试全绿**。控制台现以独立进程运行在 http://127.0.0.1:7777/（21 条 pending 等审批）。
 
 **🖥️ ADR-0010 Web 管理台落地（2026-11-15 21:25，e5d5d96）——审批体验债务清偿**：用户否定 CLI 审批并给出通用性要求（"独立的 web 界面……避免 opencode/claude code CLI 无法在界面上操作"）→ ADR-0010：**独立 Web 管理台为第一公民**（所有宿主共用），宿主内嵌（DSH client slot）降为可选复用层。实现：server.ts 加管理路由（entries 列表/详情、deprecate/hardDelete 走写锁+panel 账本、ledger/journal 审计视图）；panel.ts 升级三 tab 控制台（收件箱/记忆库/审计，记忆库含 BM25 检索+详情+废弃+双确认硬删除，零依赖单文件）；`memhub serve --port 0` 真实端口回显修复（listening 事件）。**99 测试全绿**（core 92 + host 7），真机冒烟通过（85 条目/1175 账本事件/三 tab 全渲染）。**你的操作**：`memhub serve --root 'E:\009workspace\dsh\dsh-plugin-dev'` → 浏览器打开打印的 URL → 点按钮审批/管理。
