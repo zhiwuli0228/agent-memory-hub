@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**🌐 ADR-0011 Git-first 同步 + 萃取验证闸门（2026-11-15 22:25，f81f2a1）**：用户提出远程仓库记忆协作需求（批准/定时萃取→提交中心仓→MR/issue 式反馈→合入）。查证腾讯 Team Memory：中心化 API 服务，只有 ACL+置信分级，**没有 MR/issue 反馈环**（其官方文档 §6.2 自己承认需要 review/merge 治理）。我们的决策：**hub root 就是 git 仓库**，零自建服务器——`memhub sync status|init|push|pull`（transport 层 spawnSync git，core 不碰 git）；PR=审查/拒绝/意见/合入，issue=条目级反馈；`memhub validate` 萃取验证闸门（契约解析/重复 id/标题冲突/supersedes 目标存在，exit 1 可作本地 pre-push 检查与 CI PR 门禁）；pending/ 不入库（.gitignore）。真机验证干净：85 条目+21 提案 0 错误。99 测试全绿。定时萃取：宿主级 schedule（DSH schedule_create 定时开会话跑萃取流）或 CI 级 GitHub Actions cron，两种配置待用户选定。
+
 **🔁 重新萃取闭环（2026-11-15 22:05，0572539）**：用户提出萃取质量问题（"想要通用环境登录部署流程，萃取出来绑定了环境"）→ 重新萃取成为一等公民，两条快速路径共用既有版本升级机制（旧版本快照进 history/、version+1、账本记录）：(1) **管理台编辑**——条目详情加"编辑（重新萃取）"，摘要/正文 textarea 保存即新版本（POST /api/entries/:id/update，写锁+panel 账本）；(2) **模型协作**——memory_propose 加 `supersedes: [entryId]`（薄包+MCP schema 同步），提案绑定目标条目，**批准时原地升级版本而非产生重复条目**，账本记 supersedes。101 测试全绿（core 94 + host 7），薄包已重打包（42KB）待宿主更新生效。控制台运行于 http://127.0.0.1:7777/。
 
 **🔧 控制台可用性修复 + legacy pending 全兼容（2026-11-15 21:45，dd57f17）**：用户报告界面打不开 → 诊断 = serve 进程未存活（无端口冲突）→ 修复三件套：serve **自动开浏览器**（--no-open 可关）、EADDRINUSE 友好提示、关闭终端即停服务的明示。**真机 serve 发现 inbox 只显示 1/21 条 pending** → legacy 格式四连修：`status: pending`→candidate 别名映射、proposal 上下文 version 缺省 1、block-style YAML（缩进 `- item` 的 tags/source_refs）收集重编码、`scope: project:<id>` 裸简写解析——**21/21 全部可解析**，控制台收件箱全量可见。回放测试随之修正语义（按被引条目自身 workspace 回放，替代硬编码 workspace）——**top-3 retention 93.2%→94.9%（更优）**。**99 测试全绿**。控制台现以独立进程运行在 http://127.0.0.1:7777/（21 条 pending 等审批）。
