@@ -17,7 +17,7 @@
 ## Day-0 架构原则（每条对应旧仓被实现推翻过的假设，见 ADR-0001）
 
 1. **多宿主 day 0**：`core`（存储/检索/审批/账本）→ `transport`（MCP stdio / HTTP router / CLI）双入口同源；不存在 `host-glue` 目录，DSH 接入 = 未来独立薄包。
-2. **金字塔注册表 day 0**：workspaces + core_workspaces + parentCoreIds 是 core 的原生配置；MCP/CLI 与 DSH 走**同一份**工作区解析（根除"合成 workspace 塌陷"）。
+2. **作用域零配置 day 0（ADR-0002）**：workspace 身份 = git origin remote > 规范目录，首次使用自动登记；global 天然存在；**domain 层可选**（无配置 = project ∪ global 两层）。旧 hub 的 `core_workspaces`/`parentCoreIds` 照读兼容。MCP/CLI 与未来 DSH 包走**同一份**解析；回退必须如实标注（`workspace.exact=false`），绝不静默隐藏 project 知识。
 3. **身份宿主所有 day 0**：workspace 身份由入口进程的执行上下文决定（cwd/显式参数）；模型只能选"查什么"，永远不能选"以谁的身份查"。
 4. **审批门禁进 transport day 0**：写操作在 MCP/CLI 层失败关闭，不依赖宿主钩子；审批落点 = 面板/CLI inbox。
 5. **注入器与萃取器一等公民**：`memhub pack` / `memhub hook` / `memhub extract` 与 MCP 同级命令。

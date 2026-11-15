@@ -10,3 +10,5 @@
 | 2026-11-15 | npm 占名 0.0.1（占位包已备好，待 npm 登录）；首个正式版 0.1.0 | [roadmap.md](roadmap.md) |
 | 2026-11-15 | `memory_*` 工具名沿用（四宿主实测过 + 与名字词根一致） | [tool-surface.md](../02-harness/tool-surface.md) |
 | 2026-11-15 | GitHub 仓库 public / MIT / main 分支 | 旧仓 positioning（公司内优先 + 公共发布照旧） |
+| 2026-11-15 | **V2 设计定稿**：吸收/摒弃清单（五条不抄）+ 管线投资重心移向抽取与遗忘 + journal 情景层 + day-zero transcript 索引 + 分级审批 | 调查目录两套最新分析：`E:\009workspace\design-doc\长程记忆技术分析_2026.11.15.md` + 《外部记忆管理中心原理对比与演进蓝图》（19 项目/6 路线） |
+| 2026-11-15 | **ADR-0002**：workspace 零配置自动登记（git remote > 规范目录）；global 默认；domain 层降级可选（用户质疑"金字塔只有 DSH 支持"触发） | [ADR-0002](../01-architecture/decisions/ADR-0002-workspace-zero-config.md) |

@@ -53,6 +53,6 @@ transport/     mcp-stdio · http-router · cli
 
 ## 5. 身份规则
 
-- workspace 身份由入口进程执行上下文决定（`--workspace` 显式 > 注册表匹配 cwd > 文档化回退）。
+- workspace 身份由入口进程的执行上下文决定，解析顺序（ADR-0002）：显式 `--workspace` > git origin remote > 规范项目目录 > 合成回退。首次使用**自动登记**（零配置），名字可后改。
 - 回退不是塌陷：合成 workspace 必须在 `status` 中如实标注（`workspace.exact=false`），绝不静默隐藏 project 知识。
 - 模型可以在参数里选"查什么"，永远不能选"以谁的身份查"。
