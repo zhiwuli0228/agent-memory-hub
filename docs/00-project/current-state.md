@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**Harness 文档框架初始化完成（2026-11-15，ff81621）**：按旧仓标准同构复刻 22 个文档——docs/README（阅读策略分档+不变量+目录地图）、00-project 补齐（decision-log/glossary/roadmap 含各 Step 验收标准）、01-architecture（design/module-boundaries 含禁入符号清单/storage-contract/compatibility 策略）、02-harness 全套（harness-standard 双层化/host-capability-matrix 三档标注/interception-modes/context-policy/tool-surface 工具面冻结）、03-openspec 规则、04-development（testing-guide 契约测试纪律+旧仓五坑/dependency-policy 零依赖 allowlist）、05-domain（knowledge-types/scope-rules/source-ref-rules）、06-operations（release/security）、07-templates、根级 DESIGN/KNOWLEDGE-FORMAT/COMPATIBILITY。关键纪律：继承事实三档标注（旧仓实测=基线，本仓复验才升档）；契约测试样例只来自真实 hub。
+
 **仓库奠基（2026-11-15）**：GitHub 仓库 `zhiwuli0228/agent-memory-hub`（public）+ 本地骨架初始化完成——AGENTS.md（不变量四条 + day-0 八原则）、README（英文门面，含 roadmap 五步）、ADR-0001（八原则正式化，每条注明旧仓教训）、project-brief（五张牌定位）、零依赖 frontmatter 契约测试（第一批种子测试）。`memory_*` 工具名沿用（四宿主实测）；CLI/MCP server 名 `memhub`。
 
 ## 命名定案
