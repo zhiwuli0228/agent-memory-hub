@@ -98,3 +98,14 @@ export {
   rebuildTranscriptIndex,
   TRANSCRIPT_INDEX_FILE,
 } from './core/transcript.js'
+
+// Extraction protocol (trigger-agnostic; ADR-0011)
+export {
+  buildExtractionMaterial,
+  readExtractState,
+  writeExtractState,
+  EXTRACT_STATE_FILE,
+} from './core/extract.js'
+export type { ExtractionMaterial, ExtractLedgerEvent } from './core/extract.js'
+export { validateHub } from './core/validate.js'
+export type { ValidationReport, ValidationIssue } from './core/validate.js'

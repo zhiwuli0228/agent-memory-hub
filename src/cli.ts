@@ -15,6 +15,7 @@ import { requireApproval } from './core/approval.js'
 import { createApiState } from './transport/server.js'
 import { startServer, serverUrl } from './transport/http.js'
 import { createState, handleRpc, serveStdio, TOOLS, type TransportState } from './transport/mcp.js'
+import { buildExtractionMaterial, readExtractState, writeExtractState } from './core/extract.js'
 
 /**
  * memhub CLI — same core, same behavior as the MCP tools (one behavior, one
@@ -36,6 +37,7 @@ interface CliArgs {
   open?: boolean
   remote?: string
   message?: string
+  since?: string
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -87,6 +89,10 @@ function parseArgs(argv: string[]): CliArgs {
         break
       case '--message':
         args.message = argv[i + 1]
+        i += 1
+        break
+      case '--since':
+        args.since = argv[i + 1]
         i += 1
         break
       default:
@@ -280,6 +286,22 @@ export function main(argv: string[]): number {
         out(report, args.json)
         return report.ok ? 0 : 1
       }
+      case 'extract': {
+        const root = requireHub(args)
+        const sub = args._[1]
+        if (sub === 'material') {
+          const material = buildExtractionMaterial(root, args.since)
+          out(material, true) // always JSON — it is consumed by an agent, not a human
+          return 0
+        }
+        if (sub === 'done') {
+          const at = args.since ?? new Date().toISOString()
+          writeExtractState(root, at)
+          const state = readExtractState(root)
+          out({ ok: true, watermark: state.lastExtractedAt, extractionCount: state.extractionCount }, args.json)
+          return 0
+        }
+        throw new HubError(ErrorCode.E_VALIDATION, 'usage: memhub extract <material|done> [--since <iso>]\n  material: what changed since the last watermark (feed to your workflow agent)\n  done:     advance the watermark after a successful extraction run')      }
       case 'sync': {
         const root = requireHub(args)
         const sub = args._[1]
@@ -380,6 +402,9 @@ function printHelp(): void {
   memhub inbox reject <PRO-id>        reject with optional --note
   memhub validate                     extraction validation over knowledge/ + pending/
                                       (exit 1 on errors — usable as CI gate)
+  memhub extract material [--since]   extraction material since the watermark (JSON for
+                                      ANY scheduler's agent: cron / workflow platform / CI)
+  memhub extract done [--since iso]   advance the extraction watermark after a run
   memhub sync <status|init|push|pull> [--remote url] [--message text]
                                       git-first hub sync (ADR-0011): push knowledge to a
                                       central repo, review via PR, issues for feedback

@@ -40,13 +40,20 @@ infrastructure.**
    pending + knowledge (frontmatter parses, ids unique, no title conflicts,
    scopes well-formed). Runs locally before push and as CI on every PR —
    a red check blocks merge, i.e. "validated before it can merge".
-4. **Scheduled extraction**: two options, both reuse existing machinery:
-   - Host-level: a scheduled task (e.g. DSH schedule) opens a session whose
-     prompt runs the extraction flow (read journal since last extraction →
-     memory_propose → human approval) — extraction needs a model, so the
-     model's host schedules it.
-   - CI-level: a GitHub Actions cron runs `memhub validate` on PRs; a
-     separate workflow can open "extraction PRs" from repo-hosted journals.
+4. **Scheduled extraction — trigger-agnostic (revised 2026-11-15 after user
+   feedback)**: extraction is scheduled by ANY workflow tool the user already
+   runs (agent-workflow platforms, cron, Task Scheduler, CI). memhub exposes
+   a CLI protocol, never a host-specific scheduler binding — tying it to one
+   host (e.g. DSH schedules) would lock out every other host's users:
+   - `memhub extract material [--since]` emits what changed since the last
+     watermark (ledger events + current entries + pending titles) as JSON
+     for the platform's agent to consume.
+   - the agent distills/generalizes and writes with `memhub propose`
+     (supersedes for re-extraction).
+   - `memhub extract done` advances the watermark (records/extract-state.json).
+   - `memhub validate` then `memhub sync push` close the loop.
+   The workflow platform supplies the model; memhub supplies the material,
+   the guardrails, and the write path.
 
 ## Consequences
 
