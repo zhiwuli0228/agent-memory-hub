@@ -31,6 +31,9 @@ import {
   listProposals,
 } from '../core/store.js'
 import { requireApproval, type ApprovalChannel } from '../core/approval.js'
+import { preflight } from '../core/inject.js'
+import { appendJournal, readJournal } from '../core/journal.js'
+import { detectDejaVu, indexTranscript, readTranscriptIndex } from '../core/transcript.js'
 import type { KnowledgeScope, KnowledgeType } from '../core/types.js'
 
 /**
@@ -266,6 +269,86 @@ export const TOOLS: Record<string, ToolDef> = {
       const conflict = findTitleConflict(state.hubRoot, String(args['title']))
       return {
         conflict: conflict === null ? null : { id: conflict.frontmatter.id, title: conflict.frontmatter.title },
+      }
+    },
+  },
+  memory_preflight: {
+    description:
+      'Build the L0 static pack for this turn: top-3 hits (replay-calibrated), one line each, with a documented token estimate. Records a preflight.recorded event. Inject the pack only when status=ready.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        intent: { type: 'string' },
+        limit: { type: 'number' },
+        types: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['intent'],
+    },
+    handler: (state, args) => {
+      const result = preflight(state.index, state.hubRoot, state.workspace.workspaceId, String(args['intent']), {
+        limit: typeof args['limit'] === 'number' ? args['limit'] : undefined,
+        types: args['types'] as string[] | undefined,
+      })
+      state.metrics.queryCount += 1
+      return result
+    },
+  },
+  memory_journal: {
+    description:
+      'Episodic layer: append (action=append; auto-capture is fine here — journal is disposable and never becomes knowledge) or read (action=read; optional day=YYYY-MM-DD local stamp).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['append', 'read'] },
+        text: { type: 'string' },
+        sessionId: { type: 'string' },
+        day: { type: 'string' },
+      },
+      required: ['action'],
+    },
+    handler: (state, args) => {
+      const action = String(args['action'])
+      if (action === 'append') {
+        const text = String(args['text'] ?? '')
+        if (text === '') throw new HubError(ErrorCode.E_VALIDATION, 'journal append requires text')
+        return withWriteLock(state, () =>
+          appendJournal(state.hubRoot, { sessionId: args['sessionId'] as string | undefined, text }),
+        )
+      }
+      return { entries: readJournal(state.hubRoot, args['day'] as string | undefined) }
+    },
+  },
+  memory_dejavu: {
+    description:
+      'Day-zero deja-vu check: was a similar conversation already had? Index a session transcript (action=index; tokens + preview only — the body stays with the host) or query overlaps (action=check).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['index', 'check'] },
+        sessionId: { type: 'string' },
+        text: { type: 'string' },
+        location: { type: 'string' },
+        query: { type: 'string' },
+        threshold: { type: 'number' },
+      },
+      required: ['action'],
+    },
+    handler: (state, args) => {
+      const action = String(args['action'])
+      if (action === 'index') {
+        const sessionId = args['sessionId'] as string | undefined
+        const text = String(args['text'] ?? '')
+        const location = String(args['location'] ?? '')
+        if (sessionId === undefined || text === '' || location === '') {
+          throw new HubError(ErrorCode.E_VALIDATION, 'dejavu index requires sessionId, text and location')
+        }
+        return withWriteLock(state, () => indexTranscript(state.hubRoot, { sessionId, text, location }))
+      }
+      const query = String(args['query'] ?? '')
+      if (query === '') throw new HubError(ErrorCode.E_VALIDATION, 'dejavu check requires query')
+      return {
+        sessions: readTranscriptIndex(state.hubRoot).length,
+        dejaVu: detectDejaVu(state.hubRoot, query, typeof args['threshold'] === 'number' ? args['threshold'] : undefined),
       }
     },
   },

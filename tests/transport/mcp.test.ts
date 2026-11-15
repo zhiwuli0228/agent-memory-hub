@@ -157,6 +157,47 @@ describe('MCP tools (fail-closed approval gate)', () => {
     expect(parsed.conflict?.id).toBe('KNO-000001')
   })
 
+  it('memory_preflight returns the L0 pack and records the event', () => {
+    const state = seededState()
+    call(state, 'memory_propose', { type: 'decision', title: '写锁租约设计', summary: '心跳超龄自动回收。', body: '租约正文。' })
+    call(state, 'memory_commit', { proposalId: 'PRO-000001', channel: 'panel' })
+    const result = call(state, 'memory_preflight', { intent: '租约 心跳' })
+    const parsed = JSON.parse(result.text) as { status: string; pack: string; tokens: number }
+    expect(parsed.status).toBe('ready')
+    expect(parsed.pack).toContain('DEC-000001')
+    expect(parsed.tokens).toBeGreaterThan(0)
+    const ledger = readLedger(ledgerPath(state.hubRoot))
+    expect(ledger.some((r) => r['type'] === 'preflight.recorded')).toBe(true)
+  })
+
+  it('memory_journal appends and reads the disposable episodic layer', () => {
+    const state = seededState()
+    const appended = call(state, 'memory_journal', { action: 'append', sessionId: 's1', text: '讨论了租约细节' })
+    expect(JSON.parse(appended.text).ts).toBeDefined()
+    const read = call(state, 'memory_journal', { action: 'read' })
+    const entries = JSON.parse(read.text).entries as Array<{ text: string }>
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.text).toBe('讨论了租约细节')
+    // Journal never leaks into knowledge.
+    const hits = call(state, 'memory_search', { query: '租约' })
+    expect(JSON.parse(hits.text).hits).toHaveLength(0)
+  })
+
+  it('memory_dejavu indexes transcripts and detects overlap', () => {
+    const state = seededState()
+    call(state, 'memory_dejavu', {
+      action: 'index',
+      sessionId: 'session-lock',
+      text: '写锁租约 心跳 fencing token',
+      location: 'host://session-lock',
+    })
+    const check = call(state, 'memory_dejavu', { action: 'check', query: '写锁租约 fencing' })
+    const parsed = JSON.parse(check.text) as { sessions: number; dejaVu: Array<{ sessionId: string; overlap: number }> }
+    expect(parsed.sessions).toBe(1)
+    expect(parsed.dejaVu[0]?.sessionId).toBe('session-lock')
+    expect(parsed.dejaVu[0]?.overlap).toBeGreaterThan(0.3)
+  })
+
   it('appendLedger + readLedger round-trip keeps the event stream append-only', () => {
     const root = mkdtempSync(join(tmpdir(), 'amh-ledger-'))
     initHub(root)
