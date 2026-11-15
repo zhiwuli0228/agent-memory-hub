@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**🧭 ADR-0013 无独立服务器定案（2026-11-15 23:45，49ffebd）——拓扑最终形态**：用户第三轮修正（本地 hub 在每人自己电脑、workflow 定时萃取每人自己触发、"不应该有独立的机器"）→ 定案：**中心 = 团队已有的 git 服务**（任意 provider，非 GitHub 特定），MR 审查用 git 服务自带能力，零新增部署；**memhub serve 仅本地控制台**（收件箱/记忆库/审计，自己用）；ADR-0012 的 hub push/pull（HTTP 中心枢纽）保留为可选路径（团队未来若要腾讯形态统一管理，配置切换即可，非重写）。实现：`memhub sync push --branch <名字>`（个人分支 + 中文 MR nextStep——审查闸门是 git 服务自己的 UI）；新增 docs/03-usage/scheduled-extraction.md 接线指南（每日循环 6 步 + cron/agent-workflow 平台/CI 样例 + MR 审查者视角 + issue 条目级长期问题用法）。测试：真端到端 sync push --branch alice 对本地 bare 仓库（远端分支创建 + 本地 HEAD 切换）。117 全绿（core 110 + host 7）。
+
 **🏛️ ADR-0012 中心枢纽同步（2026-11-15 23:30，a8cdec8）——方向修正**：用户质疑 git-first 协作（"腾讯的记忆管理为啥会有 Git 管理啊"）→ 承认 PR 式协作对高频小数据是仪式、markdown 冲突对非开发者不友好、且团队不标准化 git 托管。新形态：**中心枢纽 = 常驻 memhub serve**（单一事实源）。`POST /api/propose`（远程 hub 推送本地已批准条目为**中心提案**，originId upsert 保持 id 跨 hub 稳定——commitKnowledge 支持显式 id 不存在时按该 id 创建）——**中心收件箱就是 MR 审查**：批准=合入、拒绝=拒绝、改后再推=意见闭环；`GET /api/entries?since=` 增量拉取 + `memhub hub pull`（版本对比：新→插入、本地旧→升级、相同→跳过，actor remote-hub）；`memhub hub push|pull --remote <central-url>`；hubSync 异步进程内 fetch（20s abort）——**spawnSync 阻塞主事件循环会与同进程 server 死锁**（回环测试发现）；CLI 经 pendingHubSync 延续。git 降级为可选灾备。116 测试全绿（core 109 + host 7）。定时萃取协议（extract material/done）与验证闸门（validate）不变，workflow agent 可直接 POST /api/propose 到中心。
 
 **✅ 批准即本地提交（2026-11-15 23:05，c2d5498）**：用户确认推送策略=推荐档：**批准后自动 git commit 到本地历史**（细粒度、离线安全），push 保持显式/定时（中心仓提交成批、可审查）。实现：transport/autocommit.ts（git add+commit，非 git 仓库静默 no-op 不阻塞审批），接线全部知识变更动作（approve 面板+CLI、update、deprecate、delete），响应带 git:{committed,detail}。105 测试全绿。**数据流结论**：批准=本地即时生效（knowledge 文件+索引，下次 search/preflight 即命中）；上层中心仓传播发生在 sync push（workflow 定时或手动）→ PR 审查 → merge。控制台运行于 http://127.0.0.1:7777/。
