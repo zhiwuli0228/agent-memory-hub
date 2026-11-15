@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -213,5 +213,29 @@ describe('DSH adapter registration', () => {
     await run('memory_get', { id: 'PRO-000001' })
     await run('memory_close_task', { assessment: 'deferred' })
     await run('memory_cite', { id: 'PRO-000001', purpose: 'lossless contract test' })
+
+    // Legacy entry shape (predecessor-era frontmatter: no created/updated keys,
+    // timestamps in extra.*_at) must not leak undefined into tool output.
+    const legacyDir = join(root, 'knowledge', 'decision')
+    mkdirSync(legacyDir, { recursive: true })
+    writeFileSync(
+      join(legacyDir, 'DEC-999999.md'),
+      [
+        '---',
+        'id: DEC-999999',
+        'version: 1',
+        'type: decision',
+        'status: accepted',
+        'title: legacy entry without created/updated',
+        'summary: predecessor-era frontmatter shape',
+        'scope: {level: global}',
+        'tags: []',
+        '---',
+        'legacy body',
+      ].join('\n'),
+    )
+    const legacy = (await run('memory_get', { id: 'DEC-999999' })) as { frontmatter: Record<string, unknown> }
+    expect(legacy.frontmatter).not.toHaveProperty('created')
+    expect(legacy.frontmatter).not.toHaveProperty('updated')
   })
 })

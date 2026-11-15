@@ -35,9 +35,24 @@ function errorPayload(error: unknown): { error: string; code?: string } {
   return { error: error instanceof Error ? error.message : String(error) }
 }
 
+/** Host output contract is lossless JSON: strip explicit `undefined` values
+ * from every tool result at the boundary — legacy hub data can carry optional
+ * keys in any shape, so the adapter normalizes rather than trusting each path. */
+function stripUndefined<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((item) => stripUndefined(item)) as T
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      if (item !== undefined) out[key] = stripUndefined(item)
+    }
+    return out as T
+  }
+  return value
+}
+
 async function safe(tool: ToolDefinition, args: Record<string, unknown>): Promise<unknown> {
   try {
-    return await tool.execute(args, undefined)
+    return stripUndefined(await tool.execute(args, undefined))
   } catch (error) {
     return errorPayload(error)
   }

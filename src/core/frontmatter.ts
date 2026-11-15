@@ -217,9 +217,18 @@ export function parseKnowledgeFrontmatter(raw: string): KnowledgeFrontmatter {
     summary,
     scope,
     tags,
-    created: asOptionalString(scalars.get('created')),
-    updated: asOptionalString(scalars.get('updated')),
-    last_verified: asOptionalString(scalars.get('last_verified')),
+    // Optional keys are omitted (never `undefined`) so parsed frontmatter is
+    // lossless-JSON safe for host tool outputs, even on legacy entries that
+    // predate these fields (old format kept timestamps in extra.*_at).
+    ...(asOptionalString(scalars.get('created')) !== undefined
+      ? { created: asOptionalString(scalars.get('created')) }
+      : {}),
+    ...(asOptionalString(scalars.get('updated')) !== undefined
+      ? { updated: asOptionalString(scalars.get('updated')) }
+      : {}),
+    ...(asOptionalString(scalars.get('last_verified')) !== undefined
+      ? { last_verified: asOptionalString(scalars.get('last_verified')) }
+      : {}),
     extra,
   }
 }
