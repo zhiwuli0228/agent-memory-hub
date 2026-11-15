@@ -20,16 +20,23 @@ export type LedgerAction =
   | 'register-workspace'
   | 'conflict-freeze'
 
+/**
+ * Event-stream record (the predecessor ledger shape — type discriminates the
+ * event; see docs/04-development/search-replay-2026-11-15.md appendix).
+ * knowledge-lifecycle events carry ts/actor/action/id/version convenience
+ * fields; harness events (citation.added, approval.missing, proposal.committed…)
+ * carry only type + their own payload.
+ */
 export interface LedgerRecord {
-  ts: string
-  actor: string
-  action: LedgerAction
+  type?: string
+  ts?: string
+  actor?: string
+  action?: LedgerAction
   id?: string
   version?: number
   /** Evidence refs backing the decision (file:/session:/url:/note:). */
   source_refs?: string[]
   note?: string
-  /** Extra structured fields (e.g. approval.missing, lock info). */
   [key: string]: unknown
 }
 

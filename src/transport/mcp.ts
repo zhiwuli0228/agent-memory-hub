@@ -1,0 +1,474 @@
+import { appendFileSync, readFileSync, unlinkSync } from 'node:fs'
+import { join } from 'node:path'
+import { ErrorCode, HubError } from '../core/errors.js'
+import { isHubInitialized, readHubConfig } from '../core/hub.js'
+import {
+  appendLedger,
+  ledgerPath,
+  readSequences,
+  writeSequences,
+} from '../core/ledger.js'
+import {
+  acquireLock,
+  assertFencing,
+  heartbeatLock,
+  lockInfo,
+  releaseLock,
+} from '../core/lock.js'
+import { registerWorkspace, resolveWorkspace, type ResolvedWorkspace } from '../core/registry.js'
+import {
+  buildIndex,
+  emptyMetrics,
+  searchWithMetrics,
+  type SearchIndex,
+  type SearchMetrics,
+} from '../core/search.js'
+import {
+  commitKnowledge,
+  createProposal,
+  findTitleConflict,
+  getEntry,
+  listProposals,
+} from '../core/store.js'
+import { requireApproval, type ApprovalChannel } from '../core/approval.js'
+import type { KnowledgeScope, KnowledgeType } from '../core/types.js'
+
+/**
+ * MCP stdio transport — zero-dependency JSON-RPC 2.0. The protocol surface is
+ * small (initialize / tools/list / tools/call), so we implement it directly
+ * (dependency policy) with the same tool contract as the CLI (one behavior,
+ * one implementation — tests are shared).
+ */
+
+const SUPPORTED_PROTOCOL_VERSIONS = ['2024-11-05', '2025-03-26', '2025-06-18'] as const
+const SERVER_INFO = { name: 'memhub', version: '0.1.0' }
+
+export interface TransportState {
+  hubRoot: string
+  workspace: ResolvedWorkspace
+  index: SearchIndex
+  metrics: SearchMetrics
+  lockToken?: string
+}
+
+export function createState(hubRoot: string, workspaceArg?: string): TransportState {
+  if (!isHubInitialized(hubRoot)) {
+    throw new HubError(
+      ErrorCode.E_HUB_NOT_INITIALIZED,
+      `hub not initialized at ${hubRoot} — run \`memhub init --root ${hubRoot}\``,
+      { hubRoot },
+    )
+  }
+  const workspace = resolveWorkspace(process.cwd(), workspaceArg)
+  const index = buildIndex(hubRoot, () => new Date().toISOString())
+  return { hubRoot, workspace, index, metrics: emptyMetrics(index) }
+}
+
+// ---------------------------------------------------------------------------
+// Tool registry
+// ---------------------------------------------------------------------------
+
+interface ToolDef {
+  description: string
+  inputSchema: Record<string, unknown>
+  handler: (state: TransportState, args: Record<string, unknown>) => unknown
+}
+
+export const TOOLS: Record<string, ToolDef> = {
+  memory_search: {
+    description:
+      'Search accepted knowledge by keywords or a natural-language intent. Scope-filtered: the workspace sees itself + global. Ranked results; default detail (L1) returns summaries — pass detail=L2 only when the full body is needed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        detail: { type: 'string', enum: ['L0', 'L1', 'L2'] },
+        limit: { type: 'number' },
+        minScore: { type: 'number' },
+        types: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['query'],
+    },
+    handler: (state, args) => {
+      const hits = searchWithMetrics(state.index, state.metrics, String(args['query']), {
+        workspaceId: state.workspace.workspaceId,
+        detail: (args['detail'] as 'L0' | 'L1' | 'L2' | undefined) ?? 'L1',
+        limit: typeof args['limit'] === 'number' ? args['limit'] : undefined,
+        minScore: typeof args['minScore'] === 'number' ? args['minScore'] : 0,
+        types: args['types'] as string[] | undefined,
+      })
+      return {
+        hits,
+        workspace: workspaceStatus(state.workspace),
+        metrics: metricsSnapshot(state.metrics),
+      }
+    },
+  },
+  memory_get: {
+    description:
+      'Read one knowledge entry by ID. Returns metadata + summary by default; pass full=true (or section=<heading>) only when the whole body is needed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        full: { type: 'boolean' },
+        section: { type: 'string' },
+      },
+      required: ['id'],
+    },
+    handler: (state, args) => {
+      const entry = getEntry(state.hubRoot, String(args['id']))
+      const full = args['full'] === true
+      const section = typeof args['section'] === 'string' ? args['section'] : undefined
+      let body: string | undefined
+      if (section !== undefined) {
+        const marker = `# ${section}`
+        const start = entry.body.indexOf(marker)
+        body = start === -1 ? undefined : entry.body.slice(start, entry.body.indexOf('\n# ', start + 1))
+      } else if (full) {
+        body = entry.body
+      }
+      return { frontmatter: entry.frontmatter, body, path: entry.path }
+    },
+  },
+  memory_status: {
+    description:
+      'Read-only self check: hub root, workspace identity (exact flag is honest — false means synthetic fallback), writer lock holder, metrics, pending count.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: (state) => ({
+      hubRoot: state.hubRoot,
+      initialized: true,
+      workspace: workspaceStatus(state.workspace),
+      lock: lockInfo(state.hubRoot),
+      metrics: metricsSnapshot(state.metrics),
+      proposals: listProposals(state.hubRoot).length,
+    }),
+  },
+  memory_propose: {
+    description:
+      'Create a pending candidate (pending/PRO-*.md). This NEVER writes knowledge/ directly — a human must approve via the panel or `memhub inbox`. Always include sourceRefs evidence.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        type: {
+          type: 'string',
+          enum: ['decision', 'constraint', 'knowledge', 'api-catalog', 'process', 'open-questions', 'runtime-base', 'playbooks', 'assets'],
+        },
+        title: { type: 'string' },
+        summary: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' } },
+        body: { type: 'string' },
+        sourceRefs: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['type', 'title', 'summary', 'body'],
+    },
+    handler: (state, args) =>
+      withWriteLock(state, () => {
+        const proposal = createProposal(
+          state.hubRoot,
+          {
+            type: args['type'] as KnowledgeType,
+            title: String(args['title']),
+            summary: String(args['summary']),
+            scope: scopeFor(state.workspace),
+            tags: args['tags'] as string[] | undefined,
+            body: String(args['body']),
+            sourceRefs: (args['sourceRefs'] as string[] | undefined) ?? [],
+            actor: 'model',
+          },
+          {
+            readSequences,
+            writeSequences,
+            appendLedger: (root, record) => appendLedger(ledgerPath(root), record),
+          },
+        )
+        registerWorkspaceIfNew(state)
+        return {
+          proposalId: proposal.id,
+          path: proposal.path,
+          nextStep: 'human approval via panel or `memhub inbox approve`',
+        }
+      }),
+  },
+  memory_commit: {
+    description:
+      'Move an approved candidate into knowledge/. Only a human-carried channel can pass: over MCP this tool ALWAYS fails closed with E_APPROVAL_REQUIRED — use the panel or `memhub inbox approve <ID>`.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        proposalId: { type: 'string' },
+        channel: { type: 'string' },
+      },
+      required: ['proposalId'],
+    },
+    handler: (state, args) =>
+      withWriteLock(state, () => {
+        const proposalId = String(args['proposalId'])
+        requireApproval((args['channel'] as ApprovalChannel | undefined) ?? 'mcp-model', {
+          id: proposalId,
+          ledgerAppend: (record) => appendLedger(ledgerPath(state.hubRoot), record as never),
+        })
+        return commitFromProposal(state, proposalId)
+      }),
+  },
+  memory_cite: {
+    description:
+      'Record that a knowledge entry influenced the current task (audit + aging signal). Cite after actually using an entry — search hits are not citations.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        purpose: { type: 'string' },
+      },
+      required: ['id', 'purpose'],
+    },
+    handler: (state, args) => {
+      const id = String(args['id'])
+      getEntry(state.hubRoot, id) // must exist
+      appendLedger(ledgerPath(state.hubRoot), {
+        type: 'citation.added',
+        id,
+        purpose: String(args['purpose']),
+        at: new Date().toISOString(),
+      })
+      return { cited: id }
+    },
+  },
+  memory_close_task: {
+    description:
+      'Close the current task with a writeback assessment (proposed / no_new_knowledge / needs_evidence / deferred). Bookkeeping only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assessment: { type: 'string', enum: ['proposed', 'no_new_knowledge', 'needs_evidence', 'deferred'] },
+        note: { type: 'string' },
+      },
+      required: ['assessment'],
+    },
+    handler: (state, args) => {
+      appendLedger(ledgerPath(state.hubRoot), {
+        type: 'task.closed',
+        assessment: args['assessment'],
+        note: typeof args['note'] === 'string' ? args['note'] : undefined,
+        at: new Date().toISOString(),
+      })
+      return { closed: true }
+    },
+  },
+  memory_duplicates: {
+    description: 'Read-only near-duplicate check for a candidate title. Never writes files.',
+    inputSchema: {
+      type: 'object',
+      properties: { title: { type: 'string' } },
+      required: ['title'],
+    },
+    handler: (state, args) => {
+      const conflict = findTitleConflict(state.hubRoot, String(args['title']))
+      return {
+        conflict: conflict === null ? null : { id: conflict.frontmatter.id, title: conflict.frontmatter.title },
+      }
+    },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Write-lock + helpers
+// ---------------------------------------------------------------------------
+
+function withWriteLock(state: TransportState, fn: () => unknown): unknown {
+  const acquired = acquireLock(state.hubRoot)
+  if (!acquired.ok) {
+    throw new HubError(ErrorCode.E_READONLY, 'another writer holds the lease (read-only for this process)', {
+      holder: acquired.holder,
+    })
+  }
+  // acquired.ok guarantees a lock with a token; '' would fail fencing loudly anyway.
+  const token = acquired.lock?.token ?? ''
+  state.lockToken = token
+  try {
+    assertFencing(state.hubRoot, token)
+    return fn()
+  } finally {
+    releaseLock(state.hubRoot, token)
+    state.lockToken = undefined
+  }
+}
+
+function scopeFor(workspace: ResolvedWorkspace): KnowledgeScope {
+  return { level: 'project', workspaceId: workspace.workspaceId }
+}
+
+function workspaceStatus(workspace: ResolvedWorkspace): Record<string, unknown> {
+  return {
+    workspaceId: workspace.workspaceId,
+    name: workspace.name,
+    path: workspace.path,
+    exact: workspace.exact,
+    origin: workspace.origin,
+  }
+}
+
+function metricsSnapshot(metrics: SearchMetrics): Record<string, unknown> {
+  const { indexedCount, queryCount, totalHits, lastHitCount, lastQuery, builtAt } = metrics
+  return {
+    indexedCount,
+    queryCount,
+    avgHits: queryCount === 0 ? 0 : Math.round((totalHits / queryCount) * 100) / 100,
+    lastHitCount,
+    lastQuery,
+    builtAt,
+  }
+}
+
+function registerWorkspaceIfNew(state: TransportState): void {
+  registerWorkspace(
+    state.hubRoot,
+    state.workspace,
+    () => new Date().toISOString(),
+    readHubConfig,
+    (root, content) => {
+      appendFileSync(join(root, 'hub.yaml'), content, 'utf8')
+    },
+  )
+}
+
+function commitFromProposal(state: TransportState, proposalId: string): unknown {
+  const proposal = listProposals(state.hubRoot).find((p) => p.id === proposalId)
+  if (proposal === undefined) {
+    throw new HubError(ErrorCode.E_NOT_FOUND, `pending proposal not found: ${proposalId}`, { proposalId })
+  }
+  const committed = commitKnowledge(
+    state.hubRoot,
+    {
+      type: proposal.frontmatter.type,
+      title: proposal.frontmatter.title,
+      summary: proposal.frontmatter.summary,
+      scope: proposal.frontmatter.scope,
+      tags: proposal.frontmatter.tags,
+      body: readFileSync(proposal.path, 'utf8').split('---')[2]?.trim() ?? '',
+      actor: 'panel',
+    },
+    {
+      readSequences,
+      writeSequences,
+      appendLedger: (root, record) => appendLedger(ledgerPath(root), record),
+    },
+  )
+  unlinkSync(proposal.path)
+  appendLedger(ledgerPath(state.hubRoot), {
+    type: 'proposal.committed',
+    proposalId,
+    knowledgeId: committed.id,
+    channel: 'panel',
+    at: new Date().toISOString(),
+  })
+  state.index = buildIndex(state.hubRoot, () => new Date().toISOString())
+  state.metrics = emptyMetrics(state.index)
+  return { knowledgeId: committed.id, version: committed.version, path: committed.path }
+}
+
+export function heartbeat(state: TransportState): boolean {
+  return state.lockToken !== undefined && heartbeatLock(state.hubRoot, state.lockToken)
+}
+
+// ---------------------------------------------------------------------------
+// JSON-RPC stdio loop
+// ---------------------------------------------------------------------------
+
+export interface RpcRequest {
+  jsonrpc?: string
+  id?: number | string | null
+  method?: string
+  params?: Record<string, unknown>
+}
+
+export function handleRpc(state: TransportState, line: string): string | null {
+  let request: RpcRequest
+  try {
+    request = JSON.parse(line) as RpcRequest
+  } catch {
+    return rpcError(null, -32700, 'Parse error')
+  }
+  const { id = null, method } = request
+  if (method === undefined) return rpcError(id, -32600, 'Invalid Request')
+  try {
+    switch (method) {
+      case 'initialize': {
+        const requested = String(request.params?.['protocolVersion'] ?? '')
+        const version = (SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(requested)
+          ? requested
+          : SUPPORTED_PROTOCOL_VERSIONS[SUPPORTED_PROTOCOL_VERSIONS.length - 1]
+        return rpcResult(id, { protocolVersion: version, capabilities: { tools: {} }, serverInfo: SERVER_INFO })
+      }
+      case 'notifications/initialized':
+        return null // notification: no response
+      case 'tools/list':
+        return rpcResult(id, {
+          tools: Object.entries(TOOLS).map(([name, def]) => ({
+            name,
+            description: def.description,
+            inputSchema: def.inputSchema,
+          })),
+        })
+      case 'tools/call': {
+        const name = String(request.params?.['name'] ?? '')
+        const tool = TOOLS[name]
+        if (tool === undefined) return rpcError(id, -32602, `Unknown tool: ${name}`)
+        const args = (request.params?.['arguments'] as Record<string, unknown> | undefined) ?? {}
+        try {
+          const result = tool.handler(state, args)
+          return rpcResult(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] })
+        } catch (error) {
+          const detail = error instanceof HubError ? { code: error.code, details: error.details } : undefined
+          const message = error instanceof Error ? error.message : String(error)
+          return rpcResult(id, {
+            content: [{ type: 'text', text: message }],
+            isError: true,
+            error: detail,
+          })
+        }
+      }
+      case 'ping':
+        return rpcResult(id, {})
+      default:
+        return rpcError(id, -32601, `Method not found: ${method}`)
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return rpcError(id, -32603, message)
+  }
+}
+
+function rpcResult(id: number | string | null, result: unknown): string {
+  return JSON.stringify({ jsonrpc: '2.0', id, result })
+}
+
+function rpcError(id: number | string | null, code: number, message: string): string {
+  return JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } })
+}
+
+/** Blocking stdio loop (server mode). Exits cleanly on EOF. */
+export function serveStdio(state: TransportState): void {
+  process.stdin.setEncoding('utf8')
+  let data = ''
+  const lines: string[] = []
+  process.stdin.on('data', (chunk: string) => {
+    data += chunk
+    let newline = data.indexOf('\n')
+    while (newline !== -1) {
+      const line = data.slice(0, newline).trim()
+      data = data.slice(newline + 1)
+      if (line !== '') lines.push(line)
+      newline = data.indexOf('\n')
+    }
+    while (lines.length > 0) {
+      const line = lines.shift()
+      if (line === undefined) break
+      const response = handleRpc(state, line)
+      if (response !== null) process.stdout.write(`${response}\n`)
+    }
+  })
+  process.stdin.on('end', () => {
+    process.exit(0)
+  })
+}
