@@ -73,7 +73,9 @@ export function preflight(
     status: surfaced.length > 0 ? 'ready' : 'no_match',
     hits: surfaced,
     tokens: pack === undefined ? 0 : estimateTokens(pack),
-    pack,
+    // Lossless-JSON contract (host tool outputs): omit absent keys instead of
+    // emitting `undefined` values.
+    ...(pack === undefined ? {} : { pack }),
   }
   appendLedger(ledgerPath(hubRoot), {
     type: 'preflight.recorded',

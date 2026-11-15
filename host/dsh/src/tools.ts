@@ -111,9 +111,11 @@ export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (arg
     },
     execute: (args) => {
       const entry = hub.getEntry(ctx.root, String(args['id']))
+      // Host output contract is lossless JSON: never emit explicit `undefined`
+      // property values — omit the key instead.
       return {
         frontmatter: entry.frontmatter,
-        body: args['full'] === true ? entry.body : undefined,
+        ...(args['full'] === true ? { body: entry.body } : {}),
         path: entry.path,
       }
     },

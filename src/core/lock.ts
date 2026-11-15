@@ -126,7 +126,8 @@ export function assertFencing(root: string, token: string, options?: LockOptions
   }
 }
 
-/** File-level diagnostics (status tooling). */
+/** File-level diagnostics (status tooling). Never emits `undefined` values —
+ * host tool outputs are lossless-JSON validated, so optional keys are omitted. */
 export function lockInfo(
   root: string,
   options?: LockOptions,
@@ -134,6 +135,10 @@ export function lockInfo(
   const lock = readLock(root)
   if (lock === null) return { held: false, fresh: false }
   const path = lockPath(root)
-  const sizeBytes = existsSync(path) ? statSync(path).size : undefined
-  return { held: true, fresh: isLockFresh(root, options), lock, sizeBytes }
+  return {
+    held: true,
+    fresh: isLockFresh(root, options),
+    lock,
+    ...(existsSync(path) ? { sizeBytes: statSync(path).size } : {}),
+  }
 }

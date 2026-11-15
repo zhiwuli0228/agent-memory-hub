@@ -41,6 +41,21 @@ function seededRoot(): string {
   return root
 }
 
+/** Host output contract: tool values must be lossless JSON — no undefined
+ * values anywhere in the tree (the dsh host rejects them outright). */
+function assertLossless(value: unknown, path: string): void {
+  if (value === undefined) throw new Error(`undefined value at ${path}`)
+  if (typeof value === 'number' && !Number.isFinite(value)) throw new Error(`non-finite number at ${path}`)
+  if (value === null || typeof value !== 'object') return
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertLossless(item, `${path}[${index}]`))
+    return
+  }
+  for (const [key, item] of Object.entries(value)) {
+    assertLossless(item, `${path}.${key}`)
+  }
+}
+
 describe('DSH adapter registration', () => {
   it('registers the memory tools on a healthy hub', () => {
     const root = seededRoot()
@@ -161,5 +176,42 @@ describe('DSH adapter registration', () => {
     const pack = (await preflight.run({ intent: '已批准条目' })) as { status: string; pack: string }
     expect(pack.status).toBe('ready')
     expect(pack.pack).toContain('DEC-')
+  })
+
+  it('every tool output survives the lossless-JSON contract (no undefined values)', async () => {
+    const root = seededRoot()
+    process.chdir(root)
+    // Seed one entry, including a proposal, so get/status/preflight all have
+    // realistic payloads; dejavu gets an indexed transcript.
+    const hubCtx = createHubContext({ root })
+    const tools = createTools(hubCtx)
+    const run = async (name: string, args: Record<string, unknown> = {}) => {
+      const tool = tools.find((candidate) => candidate.name === name)!
+      const value = await tool.run(args)
+      assertLossless(value, name)
+      return value
+    }
+    await run('memory_propose', {
+      type: 'decision',
+      title: '无损校验条目',
+      summary: '用于 lossless 合同验证',
+      body: '正文',
+    })
+    await run('memory_dejavu', {
+      action: 'index',
+      sessionId: 's-lossless',
+      text: '测试转录文本，覆盖 preview 与 token 索引路径，长度超过一百六十字符以满足截断逻辑的分支条件……'.padEnd(180, 'x'),
+      location: 'test://lossless',
+    })
+    await run('memory_dejavu', { action: 'check', query: '无损校验' })
+    // status exercises lockInfo (no lock held); get exercises frontmatter passthrough.
+    const status = (await run('memory_status')) as { acceptedCount: number; pendingCount: number }
+    expect(status.pendingCount).toBe(1)
+    await run('memory_search', { query: '无损校验' })
+    await run('memory_preflight', { intent: '无损校验条目' })
+    // get before and after commit-style usage; full=true and default both.
+    await run('memory_get', { id: 'PRO-000001' })
+    await run('memory_close_task', { assessment: 'deferred' })
+    await run('memory_cite', { id: 'PRO-000001', purpose: 'lossless contract test' })
   })
 })
