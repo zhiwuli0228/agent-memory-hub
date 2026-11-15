@@ -117,5 +117,5 @@ memhub validate --root <checked-out-hub>
 
 ## 备选路径（当前未启用）
 
-- **publish 适配器**：main 合入 → 写入腾讯 memory hub（`memhub publish`）——待团队确定其写入 API 后实现；在此之前 main 即权威文本。
+- **publish 出口已实现（ADR-0015）**：`memhub publish` 把批准的条目发到**你们自定义的出口**——hub.yaml 里 `publish.adapter: http`（POST 到 publish.endpoint）或 `publish.adapter: exec`（跑你们自己的脚本，stdin 收条目 JSON——腾讯风格 API 怎么变都只改脚本，memhub 不动）。增量发布走水位线（publish-state.json），失败不动水位线可重试。当前探索阶段建议用 exec：先写一个 `push-to-hub.mjs` 调你们的记忆库 API。
 - **HTTP 中心枢纽**（ADR-0012）：若团队未来改为常驻中心服务统一管理，`memhub hub push|pull --remote` 已实现并有测试覆盖，配置切换即可，不是重写。

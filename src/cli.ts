@@ -333,6 +333,19 @@ export function main(argv: string[]): number {
         out(result, args.json)
         return result.ok ? 0 : 1
       }
+      case 'publish': {
+        // ADR-0015: the outbound API is the team's own to define — either a
+        // configurable HTTP endpoint or their own script (which may call the
+        // Tencent memory-hub API however it evolves). memhub never hardcodes it.
+        const root = requireHub(args)
+        const ids = args._.slice(1)
+        pendingHubSync = (async () => {
+          const result = await publishCommand(root, ids)
+          out(result, args.json)
+          return result.ok ? 0 : 1
+        })()
+        return KEEP_ALIVE
+      }
       case 'help':
       case undefined:
         printHelp()
@@ -499,6 +512,132 @@ export async function hubSync(
 
 interface KnowledgeScopeLike { level: string; workspaceId?: string; domainId?: string }
 
+// ---------------------------------------------------------------------------
+// publish (ADR-0015): the outbound API is the TEAM'S OWN to define.
+// adapter http  → POST {entries:[...]} to publish.endpoint (+ custom headers)
+// adapter exec  → run publish.script with the entries JSON on stdin
+// adapter none  → publishing disabled (default; config guidance returned)
+// ---------------------------------------------------------------------------
+
+interface PublishConfig {
+  adapter: string
+  endpoint?: string
+  headers: Record<string, string>
+  script?: string
+}
+
+function readPublishConfig(root: string): PublishConfig {
+  const config = readHubConfig(root)
+  const headers: Record<string, string> = {}
+  for (const [key, value] of Object.entries(config)) {
+    const m = /^publish\.header\.(.+)$/.exec(key)
+    if (m !== null && m[1] !== undefined) headers[m[1]] = value
+  }
+  return {
+    adapter: config['publish.adapter'] ?? 'none',
+    endpoint: config['publish.endpoint'],
+    headers,
+    script: config['publish.script'],
+  }
+}
+
+const PUBLISH_STATE_FILE = 'publish-state.json'
+
+interface PublishEntryPayload {
+  id: string
+  version: number
+  type: string
+  title: string
+  summary: string
+  scope: KnowledgeScopeLike
+  tags: string[]
+  updated: string
+  sourceRefs: string
+  body: string
+}
+
+function buildPublishPayload(root: string, ids: string[]): PublishEntryPayload[] {
+  const all = listEntries(root, { includeSoftRemoved: false })
+  const selected = ids.length > 0 ? all.filter((e) => ids.includes(e.frontmatter.id)) : all
+  return selected.map((e) => ({
+    id: e.frontmatter.id,
+    version: e.frontmatter.version,
+    type: e.frontmatter.type,
+    title: e.frontmatter.title,
+    summary: e.frontmatter.summary,
+    scope: e.frontmatter.scope,
+    tags: e.frontmatter.tags,
+    updated: e.frontmatter.updated ?? '',
+    sourceRefs: String(e.frontmatter.extra['source_refs'] ?? ''),
+    body: readFileSync(e.path, 'utf8').split('---')[2]?.trim() ?? '',
+  }))
+}
+
+export interface PublishTransport {
+  (url: string, init: { method: string; headers: Record<string, string>; body: string }): Promise<{ ok: boolean; status: number; body: string }>
+}
+
+const publishHttpTransport: PublishTransport = async (url, init) => {
+  const r = await fetch(url, { method: init.method, headers: init.headers, body: init.body, signal: AbortSignal.timeout(30000) })
+  return { ok: r.ok, status: r.status, body: (await r.text().catch(() => '')).slice(0, 400) }
+}
+
+/** Exported for tests: ADR-0015 publish with a definable outbound API. */
+export async function publishCommand(
+  root: string,
+  ids: string[],
+  transport: PublishTransport = publishHttpTransport,
+): Promise<{ ok: boolean; [key: string]: unknown }> {
+  const config = readPublishConfig(root)
+  if (config.adapter === 'none') {
+    return {
+      ok: false,
+      error: 'no publish outlet configured',
+      hint: '在 hub.yaml 里定义你的出口（API 由你们自定义，ADR-0015）：\n  publish.adapter: http + publish.endpoint: <你们的记忆库 API>\n  publish.adapter: exec + publish.script: <你的脚本，stdin 收条目 JSON>\n  publish.adapter: none  # 不发布',
+    }
+  }
+  const entries = buildPublishPayload(root, ids)
+  if (entries.length === 0) {
+    if (ids.length > 0) return { ok: false, error: `no accepted entry matching: ${ids.join(', ')}` }
+    return { ok: true, published: 0, note: 'nothing to publish' }
+  }
+  const body = JSON.stringify({ entries, publishedAt: new Date().toISOString() }, null, 2)
+  let detail = ''
+  let delivered = false
+  if (config.adapter === 'http') {
+    if (config.endpoint === undefined || config.endpoint === '') {
+      return { ok: false, error: 'publish.adapter is http but publish.endpoint is not set' }
+    }
+    const r = await transport(config.endpoint, { method: 'POST', headers: { 'content-type': 'application/json', ...config.headers }, body })
+    delivered = r.ok
+    detail = `HTTP ${r.status} ${r.body}`
+  } else if (config.adapter === 'exec') {
+    if (config.script === undefined || config.script === '') {
+      return { ok: false, error: 'publish.adapter is exec but publish.script is not set' }
+    }
+    const scriptPath = join(root, config.script)
+    if (!existsSync(scriptPath)) return { ok: false, error: `publish script not found: ${scriptPath}` }
+    const run = spawnSync(process.execPath, [scriptPath], { encoding: 'utf8', input: body, timeout: 120000, killSignal: 'SIGKILL', cwd: root })
+    delivered = run.status === 0
+    detail = (run.stdout ?? '').trim().slice(0, 400)
+    if (!delivered) detail = `${detail}\n${(run.stderr ?? '').trim().slice(0, 400)}`.trim()
+  } else {
+    return { ok: false, error: `unknown publish.adapter: ${config.adapter} (http|exec|none)` }
+  }
+  if (!delivered) return { ok: false, error: `publish failed: ${detail}`, adapter: config.adapter }
+  const ts = new Date().toISOString()
+  if (ids.length === 0) writeJsonState(root, PUBLISH_STATE_FILE, { lastPublishedAt: ts })
+  appendLedger(ledgerPath(root), { ts, actor: 'cli-human', action: 'publish', id: entries.map((e) => e.id).join(','), version: 0, source_refs: [] })
+  return {
+    ok: true,
+    adapter: config.adapter,
+    published: entries.length,
+    ids: entries.map((e) => e.id),
+    detail,
+    nextStep: '已发布到你们定义的记忆库出口；水位线已记录，下次增量发布从 lastPublishedAt 开始',
+  }
+}
+
 /** ADR-0011: the hub root IS a git repository — sync delegates to git. */
 /** Exported for tests: git-backed center sync (ADR-0013). */
 export function syncCommand(root: string, sub: string, remote?: string, message?: string, branch?: string): { ok: boolean; [key: string]: unknown } {
@@ -594,6 +733,9 @@ function printHelp(): void {
                                       git service (no dedicated server, ADR-0013); --branch
                                       pushes a personal branch for MR review on the git UI;
                                       serve stays local-only (inbox/browser/audit)
+  memhub publish [IDs...]             publish approved entries to YOUR definable outlet
+                                      (hub.yaml: publish.adapter http|exec — the API
+                                      contract is yours, e.g. the Tencent memory hub)
   memhub tools                        list MCP tool names
   memhub help                         this text
 `)

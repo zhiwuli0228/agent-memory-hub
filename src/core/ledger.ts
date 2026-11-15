@@ -19,6 +19,7 @@ export type LedgerAction =
   | 'delete'
   | 'register-workspace'
   | 'conflict-freeze'
+  | 'publish'
 
 /**
  * Event-stream record (the predecessor ledger shape — type discriminates the

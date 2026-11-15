@@ -101,6 +101,13 @@ function defaultHubConfig(): string {
     '# workspaces auto-register on first use (ADR-0002); domains are optional.',
     'version: 1',
     '# domains: []   # optional grouping: domainId -> member workspace ids',
+    '# --- publish (ADR-0015): where approved entries go. APIs are yours to define.',
+    '# publish.adapter: http      # POST {entries:[...]} to publish.endpoint',
+    '# publish.endpoint: https://memory-hub.example.internal/api/entries',
+    '# publish.header.Authorization: Bearer <token>',
+    '# publish.adapter: exec      # run your own script; stdin = entries JSON',
+    '# publish.script: publish-to-memory-hub.mjs',
+    '# publish.adapter: none      # (default) publishing disabled',
     '',
   ].join('\n')
 }

@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**🚪 ADR-0015 可定义出口实现（2026-11-16 00:20）**：用户澄清——远程服务器是**他们自己部署**、**API 自己定义**、流程正在定义中（腾讯风格为主）；"流水线快速上线"只是假设，现在不考虑。实现 `memhub publish [IDs...]`：出口完全可定义（hub.yaml 平键配置）——`publish.adapter: http`（POST {entries} 到 publish.endpoint + 自定义头）或 `publish.adapter: exec`（跑团队自己的脚本，stdin 收条目 JSON，cwd=hub root——**API 演进只改脚本不改 memhub**，探索阶段推荐）或 none（默认，给配置指引）。载荷无损（id/version/type/title/summary/scope/tags/updated/sourceRefs/body）；裸 publish=增量（水位线 publish-state.json 仅成功后写入，失败可重试）；指定 IDs=精确发布不动水位线；每次成功追加 publish ledger 记录。122 全绿（core 115 + host 7）。流水线双档模式明确搁置，发布节奏保持手动/显式（MR 合入后 publish 或临时 publish）。
+
 **🔁 ADR-0014 闭环定案（2026-11-16 00:05）——最终架构**：用户确认（探索阶段）：**复用腾讯 memory hub 原有能力**（运行时检索服务，不自建）+ **git 中心仓承载审核流水线**（个人分支 MR 人审 + memhub validate CI 机审，合入 main = 终审；记忆的权威文本/源码仓库）。三部件各一个职责：git 仓=审核+源、腾讯中心=运行时检索（单向 publish，暂缓等 API）、memhub=本地工作站+双闸门（本地批准 + validate）+ 萃取协议。严格单向流：本地萃取 → memhub 批准 → sync push --branch → MR 审核 → 合入 main → publish（memhub publish 待腾讯 API 确定）→ 腾讯中心。git 从"多此一举"变成"不可替代"——因为逐条 MR 审核（意见/拒绝/改后重推）正是腾讯 hub 缺失的治理能力（其文档自认 §6.2）。接线指南 docs/03-usage/scheduled-extraction.md 已更新闭环全景。后续：探索阶段先跑 git 闭环（工具已全部实现），publish 适配器等 API。
 
 **🧭 ADR-0013 无独立服务器定案（2026-11-15 23:45，49ffebd）——拓扑最终形态**：用户第三轮修正（本地 hub 在每人自己电脑、workflow 定时萃取每人自己触发、"不应该有独立的机器"）→ 定案：**中心 = 团队已有的 git 服务**（任意 provider，非 GitHub 特定），MR 审查用 git 服务自带能力，零新增部署；**memhub serve 仅本地控制台**（收件箱/记忆库/审计，自己用）；ADR-0012 的 hub push/pull（HTTP 中心枢纽）保留为可选路径（团队未来若要腾讯形态统一管理，配置切换即可，非重写）。实现：`memhub sync push --branch <名字>`（个人分支 + 中文 MR nextStep——审查闸门是 git 服务自己的 UI）；新增 docs/03-usage/scheduled-extraction.md 接线指南（每日循环 6 步 + cron/agent-workflow 平台/CI 样例 + MR 审查者视角 + issue 条目级长期问题用法）。测试：真端到端 sync push --branch alice 对本地 bare 仓库（远端分支创建 + 本地 HEAD 切换）。117 全绿（core 110 + host 7）。
