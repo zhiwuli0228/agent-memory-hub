@@ -16,6 +16,8 @@
 
 **不推荐每轮全量注入**：cache 位置未实测前，每轮变动的 system 尾部会让 prompt cache 全部失效——代价远超收益。
 
+**降噪机制（回放实测定标，2026-11-15）**：top-k 截断（k=3）+ local_boost 承担降噪（引用保持 93.2%、命中数 3.00——见 [04-development/search-replay-2026-11-15.md](../04-development/search-replay-2026-11-15.md)）；`min_score` 绝对阈值在连续分数分布上无区分度（复现旧仓 P0-1），仅作零相关兜底，默认 0。
+
 ## 萃取（SessionEnd）
 
 - `memhub extract`：把会话中有复用价值的经验写成 pending 候选。

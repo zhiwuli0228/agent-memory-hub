@@ -15,7 +15,7 @@
 ├── history/                  # 📐 版本快照（只追加）
 │   └── <type>/<ID>@v<N>.md
 ├── records/                  # 📐 运行记录
-│   ├── ledger.jsonl          # 审批账本（只追加；谁/何时/证据）
+│   ├── ledger.jsonl          # 事件流账本（只追加；跨仓兼容承诺限于 knowledge 格式，ledger 事件形状不承诺跨版本——见 04-development/search-replay-2026-11-15.md 附录）
 │   └── sequences.json        # ID 序列
 └── .writer.lock              # 🔗 写锁租约（心跳 15s + 超龄回收 + fencing token）
 ```
