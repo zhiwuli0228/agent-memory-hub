@@ -1,21 +1,34 @@
 # 定时萃取与团队记忆协作接线指南
 
-> ADR-0011 §4（触发器无关萃取）+ ADR-0013（无独立服务器）的操作手册。
+> ADR-0011 §4（触发器无关萃取）+ ADR-0014（闭环：git 仓 = 审核流水线，腾讯 memory hub = 运行时服务）。
 
-## 拓扑一览
+## 闭环全景（三部件，各一个职责）
+
+```
+每人电脑                          git 中心仓                    腾讯 memory hub
+┌─────────────────┐    ┌──────────────────────┐    ┌──────────────────┐
+│ workflow 定时萃取 │    │ 个人分支 → MR 审核      │    │                  │
+│ extract material │    │  · 人审：通用化/查重/意见 │    │  运行时检索服务     │
+│ agent 通用化萃取  │───▶│  · 机审：validate CI   │───▶│  （复用原有能力，   │
+│ memhub 批准(第一道)│    │  合入 main = 终审通过   │publish│ 不自建，大家共用） │
+│ 本地深度记忆      │    │ （记忆的"源码"仓库）     │    │ （agent 查询走它）  │
+└─────────────────┘    └──────────────────────┘    └──────────────────┘
+        ▲                                                    │
+        └────────────── sync pull 回流 ──────────────────────┘
+```
+
+- **git 中心仓**：记忆的权威文本 + 审核流水线（MR 逐条意见/拒绝/改后重推；`memhub validate` 作为 CI 机审）。合入 main = 终审通过。
+- **腾讯 memory hub**：运行时检索服务（已有，复用）。单向 publish，不做第二处真相。
+- **memhub**：本地工作站 + 萃取流水线 + 双闸门（本地批准 + validate CI）。不参与运行时查询路径。
+
+## 拓扑一览（本地侧）
 
 ```
 每人的电脑（无需独立服务器）
 ├── 本地 hub 目录（knowledge/ + pending/ + records/）
 ├── memhub serve            → 本地控制台（收件箱/记忆库/审计，仅自己用）
 ├── workflow agent + 定时任务 → 每天萃取（extract material → propose）
-└── memhub sync push --branch <自己> → 推到团队 git 服务的个人分支
-                                          ↓
-团队 git 服务（已有的，不用 GitHub 也行）
-├── MR 审查（git 服务自带）：意见/拒绝/合入 main
-└── main = 团队权威知识库
-          ↓
-其他人：memhub sync pull 同步到自己的本地 hub
+└── memhub sync push --branch <自己> → 推到 git 中心仓个人分支 → MR 审核
 ```
 
 ## 每日萃取循环（任何 workflow 平台/cron/任务计划程序）
@@ -102,9 +115,7 @@ memhub validate --root <checked-out-hub>
 | `memhub sync pull` | 同步 main 已合入的记忆 |
 | `memhub serve` | 本地控制台（不是中心服务！）|
 
-## 备选路径（团队以后若要统一管理）
+## 备选路径（当前未启用）
 
-若团队未来决定要"腾讯形态"（常驻中心服务、统一管理、控制台集中审批），
-协议已实现且测试过：中心机器 `memhub serve`，各机器
-`memhub hub push|pull --remote http://<中心>:端口`。这是配置选择，
-不是重写（见 ADR-0012）。
+- **publish 适配器**：main 合入 → 写入腾讯 memory hub（`memhub publish`）——待团队确定其写入 API 后实现；在此之前 main 即权威文本。
+- **HTTP 中心枢纽**（ADR-0012）：若团队未来改为常驻中心服务统一管理，`memhub hub push|pull --remote` 已实现并有测试覆盖，配置切换即可，不是重写。
