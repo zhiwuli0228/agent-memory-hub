@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**⏰ 触发器无关萃取协议（2026-11-15 22:35，44ac75a）**：用户修正 ADR-0011 定时萃取设计——**不能绑特定宿主调度器**（"不然不是所有人都用 dsh，直接把路堵死了"），正解是用户的类 MulticA agent-workflow 平台做定时触发。memhub 提供 CLI 协议供任意调度器驱动：`memhub extract material [--since]`（水位线以来 ledger 事件 cap 500 + 85 条目 dedup 上下文 + pending 标题防重复 + instruction 块，纯 JSON 喂平台 agent）→ agent 通用化萃取 → `memhub propose`（supersedes 重萃取）→ 人批准 → `memhub validate` → `memhub sync push` → `memhub extract done`（推进水位线 records/extract-state.json）。平台供模型，memhub 供原料/护栏/写路径。真机闭环验证：全量 500→done→增量 0。103 测试全绿。
+
 **🌐 ADR-0011 Git-first 同步 + 萃取验证闸门（2026-11-15 22:25，f81f2a1）**：用户提出远程仓库记忆协作需求（批准/定时萃取→提交中心仓→MR/issue 式反馈→合入）。查证腾讯 Team Memory：中心化 API 服务，只有 ACL+置信分级，**没有 MR/issue 反馈环**（其官方文档 §6.2 自己承认需要 review/merge 治理）。我们的决策：**hub root 就是 git 仓库**，零自建服务器——`memhub sync status|init|push|pull`（transport 层 spawnSync git，core 不碰 git）；PR=审查/拒绝/意见/合入，issue=条目级反馈；`memhub validate` 萃取验证闸门（契约解析/重复 id/标题冲突/supersedes 目标存在，exit 1 可作本地 pre-push 检查与 CI PR 门禁）；pending/ 不入库（.gitignore）。真机验证干净：85 条目+21 提案 0 错误。99 测试全绿。定时萃取：宿主级 schedule（DSH schedule_create 定时开会话跑萃取流）或 CI 级 GitHub Actions cron，两种配置待用户选定。
 
 **🔁 重新萃取闭环（2026-11-15 22:05，0572539）**：用户提出萃取质量问题（"想要通用环境登录部署流程，萃取出来绑定了环境"）→ 重新萃取成为一等公民，两条快速路径共用既有版本升级机制（旧版本快照进 history/、version+1、账本记录）：(1) **管理台编辑**——条目详情加"编辑（重新萃取）"，摘要/正文 textarea 保存即新版本（POST /api/entries/:id/update，写锁+panel 账本）；(2) **模型协作**——memory_propose 加 `supersedes: [entryId]`（薄包+MCP schema 同步），提案绑定目标条目，**批准时原地升级版本而非产生重复条目**，账本记 supersedes。101 测试全绿（core 94 + host 7），薄包已重打包（42KB）待宿主更新生效。控制台运行于 http://127.0.0.1:7777/。
