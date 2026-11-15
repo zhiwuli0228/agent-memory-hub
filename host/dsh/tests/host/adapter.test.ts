@@ -74,6 +74,7 @@ describe('DSH adapter registration', () => {
       name: 'memory_search',
       description: 'predecessor tool',
       parameters: {},
+      output: { schema: {}, render: () => [{ type: 'text' as const, text: '' }] },
       execute: () => ({}),
     })
     apply(host.ctx, { root, toolConflict: 'skip' })
@@ -92,6 +93,7 @@ describe('DSH adapter registration', () => {
       name: 'memory_search',
       description: 'predecessor tool',
       parameters: {},
+      output: { schema: {}, render: () => [{ type: 'text' as const, text: '' }] },
       execute: () => ({}),
     })
     apply(host.ctx, { root, toolConflict: 'suffix' })

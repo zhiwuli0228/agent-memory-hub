@@ -4,12 +4,28 @@
  * host dependencies at build time — the host provides these capabilities.
  */
 
+export interface ContentBlock {
+  type: 'text'
+  text: string
+}
+
+export interface ToolOutput {
+  schema: Record<string, unknown>
+  render: (args: unknown, value: unknown) => ContentBlock[]
+}
+
 export interface ToolDefinition {
   name: string
   description: string
   parameters: Record<string, unknown>
-  concurrencySafe?: boolean
+  /** Host contract: every tool declares its output shape + renderer. */
+  output: ToolOutput
+  isConcurrencySafe?: () => boolean
   execute: (args: Record<string, unknown>, exec: unknown) => Promise<unknown> | unknown
+}
+
+export function renderJson(_args: unknown, value: unknown): ContentBlock[] {
+  return [{ type: 'text', text: JSON.stringify(value, null, 2) }]
 }
 
 export interface HostContext {

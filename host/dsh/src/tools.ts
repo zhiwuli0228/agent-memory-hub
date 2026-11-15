@@ -1,11 +1,14 @@
 import * as hub from 'agent-memory-hub'
-import { resolveHubRoot, type AdapterConfig, type HostContext, type ToolDefinition } from './host-types.js'
+import { renderJson, resolveHubRoot, type AdapterConfig, type HostContext, type ToolDefinition } from './host-types.js'
 
 /**
  * Tool shells: one behavior, one implementation. Every tool is a thin forward
  * to agent-memory-hub core. There is deliberately NO memory_commit tool here:
  * commits enter knowledge/ only through the human channels (`memhub inbox`
  * / the serve panel) — the fail-closed gate stays closed inside the host.
+ *
+ * Host contract (dsh 0.2.x): every tool must declare
+ * `output { schema, render }` and expose `isConcurrencySafe()` as a method.
  */
 
 interface HubContext {
@@ -43,11 +46,16 @@ async function safe(tool: ToolDefinition, args: Record<string, unknown>): Promis
 export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (args: Record<string, unknown>) => Promise<unknown> }> {
   const definitions: Array<ToolDefinition & { run: (args: Record<string, unknown>) => Promise<unknown> }> = []
 
-  const define = (tool: Omit<ToolDefinition, 'execute'> & { execute: ToolDefinition['execute'] }) => {
+  const define = (tool: Omit<ToolDefinition, 'execute' | 'output' | 'isConcurrencySafe'> & {
+    execute: ToolDefinition['execute']
+    concurrencySafe?: boolean
+  }) => {
     definitions.push({
       ...tool,
+      output: { schema: {}, render: renderJson },
+      ...(tool.concurrencySafe === true ? { isConcurrencySafe: () => true } : {}),
       run: (args: Record<string, unknown>) => safe({ ...tool, execute: tool.execute } as ToolDefinition, args),
-    })
+    } as ToolDefinition & { run: (args: Record<string, unknown>) => Promise<unknown> })
   }
 
   define({
