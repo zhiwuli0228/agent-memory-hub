@@ -1,6 +1,6 @@
 {
   "name": "agent-memory-hub",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Agent memory bridge — local-first, human-approved, file-native long-term memory for AI coding agents (Claude Code, Codex, opencode, gemini, DSH). One local service, every agent shares it.",
   "keywords": [
     "agent-memory",
@@ -18,6 +18,14 @@
   ],
   "license": "MIT",
   "author": "zhiwuli0228",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhiwuli0228/agent-memory-hub.git"
+  },
+  "homepage": "https://github.com/zhiwuli0228/agent-memory-hub#readme",
+  "bugs": {
+    "url": "https://github.com/zhiwuli0228/agent-memory-hub/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -40,7 +48,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm run build && npm run test",
-    "check:host": "npm --prefix host/dsh run check"
+    "check:host": "npm --prefix host/dsh run check",
+    "prepublishOnly": "npm run check && node -e \"const p=require('./package.json'); if(!/^\\d+\\.\\d+\\.\\d+(-[\\w.]+)?$/.test(p.version)) { console.error('bad version'); process.exit(1) }\""
   },
   "engines": {
     "node": ">=20"
