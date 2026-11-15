@@ -1,0 +1,6 @@
+- insert:
+    - id: agent-memory-hub-dsh
+      name: agent-memory-hub-dsh
+      config:
+        # Hub root; empty = $MEMHUB_ROOT or the session working directory.
+        root: ''
