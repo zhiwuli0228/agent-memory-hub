@@ -1,0 +1,51 @@
+{
+  "name": "agent-memory-hub",
+  "version": "0.0.1",
+  "description": "Agent memory bridge — local-first, human-approved, file-native long-term memory for AI coding agents (Claude Code, Codex, opencode, gemini, DSH). One local service, every agent shares it.",
+  "keywords": [
+    "agent-memory",
+    "agent-memory-bridge",
+    "memory",
+    "mcp",
+    "mcp-server",
+    "claude-code",
+    "codex",
+    "opencode",
+    "cross-host",
+    "local-first",
+    "knowledge-base",
+    "long-term-memory"
+  ],
+  "license": "MIT",
+  "author": "zhiwuli0228",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "memhub": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run build && npm run test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}
