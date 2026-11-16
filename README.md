@@ -12,6 +12,27 @@
 - **Cross-host by design** — one MCP server + one CLI (`memhub`) + one optional local dashboard, all backed by the same files. Register once, every agent shares the same memory.
 - **Scoped** — project → domain → global knowledge hierarchy with ancestor-chain search. Each agent sees exactly the layers it should.
 
+## Install
+
+**DSH plugin** (DeepSeek Harness users):
+
+```
+install_bundle dsh-agent-memory-hub
+```
+
+Tool surface: 8 `memory_*` tools (search / get / status / propose / preflight / cite / journal / close-task). Runtime is **zero-network** — a dead remote never degrades your host. Details: [host/dsh/README.md](host/dsh/README.md) · [部署对接指南](docs/03-usage/memory-hub-deployment.md).
+
+**CLI / MCP server** (Claude Code, OpenCode, Codex, gemini-cli, any MCP host):
+
+```sh
+npm i -g agent-memory-hub
+memhub mcp --root <hub>       # register in any MCP client
+memhub extract material       # scheduled-extraction material for any workflow platform
+memhub publish                # publish approved entries to your team's memory-hub API (ADR-0015)
+```
+
+**Team memory-hub service**: implement or deploy [docs/02-spec/memory-hub-api-v1.md](docs/02-spec/memory-hub-api-v1.md) (reference server included: `examples/memory-hub-server.mjs`).
+
 ## Status
 
 🚧 **Under active development** (this repo was founded 2026-11-15). The stable, working edition of the same memory format is [`dsh-memory-hub`](https://www.npmjs.com/package/dsh-memory-hub) (DSH plugin, v0.8.x). `agent-memory-hub` generalizes it into a standalone cross-host service; the first stable release targets **0.1.0**.

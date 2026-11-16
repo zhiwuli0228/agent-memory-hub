@@ -11,6 +11,6 @@
 # so tools register as memory_*__amh instead of erroring on name clashes.
 - insert:
     - id: agent-memory-hub-dsh
-      name: agent-memory-hub-dsh
+      name: dsh-agent-memory-hub
       config:
         root: ''
