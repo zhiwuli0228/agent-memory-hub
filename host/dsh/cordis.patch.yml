@@ -1,9 +1,16 @@
+# dsh-agent-memory-hub bundle patch: one host plugin row.
+# root: '' (empty) means the hub directory resolves from $MEMHUB_ROOT, or the
+# session working directory when it contains a hub (hub.yaml), else synthetic.
+# Point it at a fixed hub by overriding this row's config in your own profile
+# patch, e.g.:
+#   - override:
+#       id: agent-memory-hub-dsh
+#       config:
+#         root: 'C:\mem\my-hub'
+# Coexisting with the legacy dsh-memory-hub plugin? Add `toolConflict: suffix`
+# so tools register as memory_*__amh instead of erroring on name clashes.
 - insert:
     - id: agent-memory-hub-dsh
       name: agent-memory-hub-dsh
       config:
-        # 正式测试（2026-11-15）：指向原版 hub（45 条 accepted），
-        # suffix 策略让工具以 memory_*__amh 注册，与旧插件共存互不干扰。
-        # 空串 = $MEMHUB_ROOT 或会话工作目录（通用部署时恢复 root: ''）。
-        root: 'E:\009workspace\dsh\dsh-plugin-dev'
-        toolConflict: suffix
+        root: ''

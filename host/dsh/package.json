@@ -1,16 +1,47 @@
 {
-  "name": "agent-memory-hub-dsh",
+  "name": "dsh-agent-memory-hub",
   "version": "0.1.0",
-  "description": "DSH host adapter for agent-memory-hub — thin cordis plugin shell; all memory logic lives in agent-memory-hub core.",
+  "description": "Memory hub for DeepSeek Harness (DSH): human-approved long-term memory with local-first search, proposal/Approval workflow, citations and journaling. Thin host adapter — all logic lives in agent-memory-hub core; also ships as a standalone MCP server / CLI for OpenCode, Claude Code and any MCP host.",
   "license": "MIT",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhiwuli0228/agent-memory-hub.git"
+  },
+  "homepage": "https://github.com/zhiwuli0228/agent-memory-hub#readme",
+  "bugs": {
+    "url": "https://github.com/zhiwuli0228/agent-memory-hub/issues"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "cordis.patch.yml",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit && node esbuild.config.mjs",
     "test": "vitest run",
     "check": "npm run build && npm run test"
   },
+  "engines": {
+    "node": ">=22.0.0",
+    "dsh": ">=0.2.0-rc.1 <0.3.0-0"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "memory",
+    "long-term-memory",
+    "agent-memory",
+    "mcp",
+    "knowledge-base"
+  ],
   "devDependencies": {
     "agent-memory-hub": "file:../..",
     "esbuild": "^0.25.0",
@@ -22,5 +53,22 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "dshhub": {
+    "schemaVersion": 1,
+    "displayName": "Agent Memory Hub 记忆中枢",
+    "summary": "本地优先、人工批准的长期记忆中枢：提案-审核入库、跨会话检索注入、引用与日志。远端同步通道失败自动降级，运行时零网络依赖。同一核心也以独立 MCP server / CLI 形态支持 OpenCode、Claude Code 等宿主。",
+    "categories": [
+      "知识管理",
+      "记忆"
+    ],
+    "surfaces": [
+      "host"
+    ],
+    "compatibility": {
+      "dsh": ">=0.2.0-rc.1 <0.3.0-0",
+      "node": ">=22"
+    },
+    "permissions": {}
   }
 }
