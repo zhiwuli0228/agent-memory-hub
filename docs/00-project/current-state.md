@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**🛡️ 远端故障韧性修复（2026-11-16 21:05，63cc59a）**：用户事故报告——"dsh 直连腾讯记忆中心 404 直接导致 host 崩溃"。故障演练抓到 memhub 同类隐患两处：publishCommand http 分支传输层异常（ECONNREFUSED/超时）未捕获会炸出、hubSync pull 中心列表/详情 fetch 同样裸奔。已修：全部降级为 {ok:false, error}（水位线不动，重试安全），测试锁定（transport throw 场景）。**架构回答**：远端挂了不影响客户端——本地 hub 即权威（文件+倒排索引），运行时路径（search/get/status/journal）按 ADR-0001 零网络设计从不碰网；DSH 薄插件只打包 core 无远端调用可崩；远端只是显式命令的发布/同步通道（20-30s abort + 降级报错）。133 全绿（core 126 + host 7）。给用户团队 DSH 直连集成的建议：任何远端调用 try/catch + 超时 + 本地降级，或改走 memhub 架构（运行时走本地）。
+
 **🔌 宿主支持复验（2026-11-16 09:15，7c2c5b2）**：用户问"是否天然支撑 dsh/OpenCode/ClaudeCode"→ 以实测回答。**DSH ✅**（薄插件 8 工具生产在用）；**Claude Code ✅**（全局配置指向本仓 dist + mcp list Connected + claude -p 真实调用 memory_status 端到端通过——Step 3 复验完成）；**OpenCode ⚠️**（配置已指向本仓，端到端仍被宿主侧 provider key 挡：glm-5.1/mimo 均失效——V32 同因，非 memhub 问题；同一 server 经 Claude Code 真实调用通过）；裸握手冒烟 ✅（11 工具）；Codex/gemini ⏳ 未复验。**注意：改了用户全局配置**（~/.claude.json、~/.config/opencode/opencode.json 的 memory-hub 路径指向新仓，备份 .bak-memhub-20261116）。配置层结论：三宿主协议层全部天然支持（MCP stdio 标准），CLI+萃取协议兜底任何宿主。124 测试全绿。
 
 **📖 路径 A 对接文档发布（2026-11-16 09:25）**：用户定案"就按照 A，写好对接文档"。docs/03-usage/memory-hub-deployment.md：服务器部署（env 表 + systemd 常驻 + 存储定位如实标注）、memhub 侧对接（http 两行配置 / exec 脚本二选一，token 不进 git 的两种方式）、端到端验证（validate → publish → health/search + 幂等重发布语义）、agent 运行时查询样例（curl + node）、故障排查表（401/stale version/连接失败/丢失恢复——从 git main 全量重发布）、与规范的关系（参考实现=行为基准，tests 保证不漂移）。decision-log 补登 ADR-0010~0015 + 路径 A；docs/README 目录地图补 02-spec/03-usage + 团队对接入口四链接。全链路交付就绪：规范 + 参考服务端 + 参考脚本 + 对接文档 + 一致性测试。
