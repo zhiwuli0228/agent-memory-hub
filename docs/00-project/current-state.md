@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**📖 路径 A 对接文档发布（2026-11-16 09:25）**：用户定案"就按照 A，写好对接文档"。docs/03-usage/memory-hub-deployment.md：服务器部署（env 表 + systemd 常驻 + 存储定位如实标注）、memhub 侧对接（http 两行配置 / exec 脚本二选一，token 不进 git 的两种方式）、端到端验证（validate → publish → health/search + 幂等重发布语义）、agent 运行时查询样例（curl + node）、故障排查表（401/stale version/连接失败/丢失恢复——从 git main 全量重发布）、与规范的关系（参考实现=行为基准，tests 保证不漂移）。decision-log 补登 ADR-0010~0015 + 路径 A；docs/README 目录地图补 02-spec/03-usage + 团队对接入口四链接。全链路交付就绪：规范 + 参考服务端 + 参考脚本 + 对接文档 + 一致性测试。
+
 **🖥️ 参考服务端落地（2026-11-16 09:10，20cafeb）**：用户问"接口设计腾讯这边的服务支持吗"→ 以可运行代码回答：examples/memory-hub-server.mjs 规范 v1 完整参考实现（单文件零依赖 node:http + JSON 存储；upsert 版本语义/since 增量/search 关键词打分归一化/Bearer 可选鉴权/合并持久化崩溃最多丢 1 秒且按设计可重试）。任何有 node 的机器（腾讯云 CVM/容器/SCF 自定义运行时）即可部署；团队自研合规服务端可无缝替换（memhub 零改动）。端到端测试：真实 spawn server + memhub publish 全链路（写入/全文/stale-version 拒收/增量/检索）。124 全绿（core 117 + host 7）。腾讯情况判断：自部署（CVM/容器）完全支持；若用封闭现成 Team Memory 类产品则经 exec 适配脚本转译。
 
 **📜 API 规范由项目定义（2026-11-16 08:45，7342450）**：用户明确"我不定义，是你定义"——API 契约与流程由本项目产出，团队照规范实现。落地：(1) docs/02-spec/memory-hub-api-v1.md 记忆库服务规范（POST /v1/entries 批量 upsert：高版本覆盖/同版本 no-op/低版本 stale-version 拒绝；GET since 增量/单条/search 运行时检索/health；Bearer 鉴权；统一错误；updated 游标与 memhub 水位线同语义）——memhub serve 本身就是同语义参考实现，合规服务端配两行 hub.yaml 即零胶水对接；(2) examples/push-to-hub.mjs 参考发布脚本（exec adapter，stdin 收条目 → POST $MEMORY_HUB_URL/v1/entries + Bearer $MEMORY_HUB_TOKEN）；(3) publish.env.<NAME> 配置（exec 环境变量注入，token 可留系统环境不进 hub.yaml）；(4) exec 改异步 spawn——spawnSync 阻塞事件循环会与同进程 server 死锁（hubSync 同教训，规范冒烟测试抓到）。123 全绿（core 116 + host 7）。

@@ -86,10 +86,19 @@ docs/
 ├── COMPATIBILITY.md                # 宿主验证记录（继承 + 复验状态）
 ├── 00-project/                     # 简介、当前状态、决策日志、术语、路线图
 ├── 01-architecture/                # 设计、模块边界、存储契约、兼容策略、ADR
+├── 02-spec/                        # 对外服务规范（memory-hub-api-v1）
 ├── 02-harness/                     # 跨宿主接入标准、能力矩阵、工具面契约
+├── 03-usage/                       # 部署对接与定时萃取接线指南
 ├── 03-openspec/                    # 提案规则与产物
 ├── 04-development/                 # 开发、编码、测试、依赖纪律
 ├── 05-domain/                      # 知识类型、作用域、source_ref 规则
 ├── 06-operations/                  # 发布、安全、部署
 └── 07-templates/                   # ADR / 提案模板
 ```
+
+## 团队对接入口（部署记忆库 / 接入流程时读这里）
+
+1. [02-spec/memory-hub-api-v1.md](02-spec/memory-hub-api-v1.md) — 记忆库服务 API 规范（服务端照此实现）
+2. [03-usage/memory-hub-deployment.md](03-usage/memory-hub-deployment.md) — 参考服务端部署 + memhub publish 对接 + 端到端验证
+3. [03-usage/scheduled-extraction.md](03-usage/scheduled-extraction.md) — 定时萃取循环与团队协作闭环
+4. [examples/](../examples/) — 参考服务端 `memory-hub-server.mjs`、参考发布脚本 `push-to-hub.mjs`
