@@ -523,20 +523,25 @@ interface PublishConfig {
   adapter: string
   endpoint?: string
   headers: Record<string, string>
+  env: Record<string, string>
   script?: string
 }
 
 function readPublishConfig(root: string): PublishConfig {
   const config = readHubConfig(root)
   const headers: Record<string, string> = {}
+  const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(config)) {
-    const m = /^publish\.header\.(.+)$/.exec(key)
-    if (m !== null && m[1] !== undefined) headers[m[1]] = value
+    const header = /^publish\.header\.(.+)$/.exec(key)
+    if (header !== null && header[1] !== undefined) headers[header[1]] = value
+    const envVar = /^publish\.env\.(.+)$/.exec(key)
+    if (envVar !== null && envVar[1] !== undefined) env[envVar[1]] = value
   }
   return {
     adapter: config['publish.adapter'] ?? 'none',
     endpoint: config['publish.endpoint'],
     headers,
+    env,
     script: config['publish.script'],
   }
 }
@@ -617,10 +622,28 @@ export async function publishCommand(
     }
     const scriptPath = join(root, config.script)
     if (!existsSync(scriptPath)) return { ok: false, error: `publish script not found: ${scriptPath}` }
-    const run = spawnSync(process.execPath, [scriptPath], { encoding: 'utf8', input: body, timeout: 120000, killSignal: 'SIGKILL', cwd: root })
+    // Async spawn — NOT spawnSync: a blocked event loop cannot answer any
+    // in-process server, and the script's fetches would deadlock (same
+    // lesson as hubSync). Inherit the parent environment, then layer
+    // publish.env.<NAME> on top (a token can come from the system env so
+    // it never lands in hub.yaml).
+    const run = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
+      const child = spawn(process.execPath, [scriptPath], { cwd: root, env: { ...process.env, ...config.env }, stdio: ['pipe', 'pipe', 'pipe'] })
+      child.stdin.write(body)
+      child.stdin.end()
+      let stdout = ''
+      let stderr = ''
+      child.stdout.on('data', (c: Buffer) => { stdout += c.toString() })
+      child.stderr.on('data', (c: Buffer) => { stderr += c.toString() })
+      const timer = setTimeout(() => child.kill('SIGKILL'), 120000)
+      child.on('close', (code) => {
+        clearTimeout(timer)
+        resolve({ status: code, stdout, stderr })
+      })
+    })
     delivered = run.status === 0
-    detail = (run.stdout ?? '').trim().slice(0, 400)
-    if (!delivered) detail = `${detail}\n${(run.stderr ?? '').trim().slice(0, 400)}`.trim()
+    detail = run.stdout.trim().slice(0, 400)
+    if (!delivered) detail = `${detail}\n${run.stderr.trim().slice(0, 400)}`.trim()
   } else {
     return { ok: false, error: `unknown publish.adapter: ${config.adapter} (http|exec|none)` }
   }
