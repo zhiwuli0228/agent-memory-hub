@@ -7,12 +7,12 @@
 
 | 宿主 | 旧仓基线 | 本仓复验 |
 | --- | --- | --- |
-| Claude Code | ✅ V30：add-json 注册 + `claude -p --allowedTools` 真实调用 | ⏳ Step 3 |
+| Claude Code | ✅ V30：add-json 注册 + `claude -p --allowedTools` 真实调用 | ✅ 2026-11-16：全局配置 memory-hub 指向本仓 dist（备份 `.claude.json.bak-memhub-20261116`）+ `claude mcp list` ✓ Connected + `claude -p --allowedTools mcp__memory-hub__memory_status` 真实调用返回正确 hubRoot/计数 |
 | Codex | ✅ V31：exec + bypass 旗标真实调用 | ⏳ Step 3 |
-| opencode | ⚠️ V32：MCP 配置就绪；端到端被宿主侧 provider key 失效挡住（非本服务问题） | ⏳ Step 3 |
+| opencode | ⚠️ V32：MCP 配置就绪；端到端被宿主侧 provider key 失效挡住（非本服务问题） | ⚠️ 2026-11-16：配置已指向本仓 dist（备份 `opencode.json.bak-memhub-20261116`）；端到端仍被宿主侧 provider key 挡（glm-5.1 身份验证失败 / mimo Invalid API Key，与本服务无关——同一 server 进程经 Claude Code 真实调用 ✅） |
 | gemini | ✅ V33：注册成功（untrusted 目录抑制为信任机制预期） | ⏳ Step 3 |
 
-裸握手冒烟（initialize → tools/list → memory_search → memory_status）：旧仓 serverInfo memory-hub 0.8.1 全通过；本仓 `memhub` 待复验。
+裸握手冒烟（initialize → tools/list → memory_status → memory_search）：✅ 2026-11-16 本仓 `node dist/cli.js mcp` 全通过，tools/list 11 工具。
 
 ## 2. 写链路（propose → 人审 → 入库）
 
