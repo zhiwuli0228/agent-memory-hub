@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**📊 数据新鲜度透明化（2026-11-16 23:40，10bcb44）**：用户问 OpenCode/Claude Code 里"远程不可用会不会效果很差"→ 回答：**不会**——运行时工具全本地（core 零网络），远端挂了只暂停跨团队新知识可见性，本地检索/提案/批准/全量历史照常；真正"效果差"的场景是本地 hub 从未同步（空/陈旧）。产品化：memory_status 新增 freshness 字段（lastPullAt/lastPublishedAt/lastExtractAt + notes 如"pull: never synced——team knowledge may be missing locally"），任何宿主的 agent 调一次 status 即知知识边界，无需探测远端；memory_status description 写明 outage 语义（模型可读）。真实 hub 验证：诚实显示 pull 未同步 + extract 水位线。133 全绿（core 126 + host 7）。
+
 **🛡️ 远端故障韧性修复（2026-11-16 21:05，63cc59a）**：用户事故报告——"dsh 直连腾讯记忆中心 404 直接导致 host 崩溃"。故障演练抓到 memhub 同类隐患两处：publishCommand http 分支传输层异常（ECONNREFUSED/超时）未捕获会炸出、hubSync pull 中心列表/详情 fetch 同样裸奔。已修：全部降级为 {ok:false, error}（水位线不动，重试安全），测试锁定（transport throw 场景）。**架构回答**：远端挂了不影响客户端——本地 hub 即权威（文件+倒排索引），运行时路径（search/get/status/journal）按 ADR-0001 零网络设计从不碰网；DSH 薄插件只打包 core 无远端调用可崩；远端只是显式命令的发布/同步通道（20-30s abort + 降级报错）。133 全绿（core 126 + host 7）。给用户团队 DSH 直连集成的建议：任何远端调用 try/catch + 超时 + 本地降级，或改走 memhub 架构（运行时走本地）。
 
 **🔌 宿主支持复验（2026-11-16 09:15，7c2c5b2）**：用户问"是否天然支撑 dsh/OpenCode/ClaudeCode"→ 以实测回答。**DSH ✅**（薄插件 8 工具生产在用）；**Claude Code ✅**（全局配置指向本仓 dist + mcp list Connected + claude -p 真实调用 memory_status 端到端通过——Step 3 复验完成）；**OpenCode ⚠️**（配置已指向本仓，端到端仍被宿主侧 provider key 挡：glm-5.1/mimo 均失效——V32 同因，非 memhub 问题；同一 server 经 Claude Code 真实调用通过）；裸握手冒烟 ✅（11 工具）；Codex/gemini ⏳ 未复验。**注意：改了用户全局配置**（~/.claude.json、~/.config/opencode/opencode.json 的 memory-hub 路径指向新仓，备份 .bak-memhub-20261116）。配置层结论：三宿主协议层全部天然支持（MCP stdio 标准），CLI+萃取协议兜底任何宿主。124 测试全绿。
