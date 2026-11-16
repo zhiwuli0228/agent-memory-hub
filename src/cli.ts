@@ -458,7 +458,15 @@ export async function hubSync(
     const state = readJsonState<PullState>(root, PULL_STATE_FILE, { lastPulledAt: '' })
     const effectiveSince = since ?? state.lastPulledAt
     const q = effectiveSince === '' ? '' : `?since=${encodeURIComponent(effectiveSince)}`
-    const listResult = await fetchImpl(`${central}/api/entries${q}`, { method: 'GET' })
+    // Remote-down resilience: transport exceptions degrade to an error
+    // result (never escape — the hubSync caller must not crash on a dead
+    // central hub).
+    let listResult: { ok: boolean; status: number; body: Record<string, unknown> }
+    try {
+      listResult = await fetchImpl(`${central}/api/entries${q}`, { method: 'GET' })
+    } catch (error) {
+      return { ok: false, error: `central hub unreachable: ${error instanceof Error ? error.message : String(error)}` }
+    }
     if (!listResult.ok) return { ok: false, error: `central hub list failed: ${JSON.stringify(listResult.body).slice(0, 200)}` }
     const listed = (listResult.body as { entries?: Array<{ id: string; status: string }> }).entries ?? []
     const applied: string[] = []
@@ -467,7 +475,13 @@ export async function hubSync(
     for (const listedEntry of listed) {
       if (listedEntry.status !== 'accepted') continue
       try {
-        const detail = await fetchImpl(`${central}/api/entries/${encodeURIComponent(listedEntry.id)}`, { method: 'GET' })
+        let detail: { ok: boolean; status: number; body: Record<string, unknown> }
+        try {
+          detail = await fetchImpl(`${central}/api/entries/${encodeURIComponent(listedEntry.id)}`, { method: 'GET' })
+        } catch (error) {
+          errors.push(`${listedEntry.id}: detail fetch failed (${error instanceof Error ? error.message : String(error)})`)
+          continue
+        }
         if (!detail.ok) {
           errors.push(`${listedEntry.id}: detail fetch failed (${detail.status})`)
           continue
@@ -613,7 +627,15 @@ export async function publishCommand(
     if (config.endpoint === undefined || config.endpoint === '') {
       return { ok: false, error: 'publish.adapter is http but publish.endpoint is not set' }
     }
-    const r = await transport(config.endpoint, { method: 'POST', headers: { 'content-type': 'application/json', ...config.headers }, body })
+    // A dead/misbehaving outlet must degrade to an error result — NEVER let
+    // the transport exception escape (that is exactly the crash class the
+    // direct-to-remote integration suffered: a 404 taking the host down).
+    let r: { ok: boolean; status: number; body: string }
+    try {
+      r = await transport(config.endpoint, { method: 'POST', headers: { 'content-type': 'application/json', ...config.headers }, body })
+    } catch (error) {
+      return { ok: false, error: `publish transport failed (remote down?): ${error instanceof Error ? error.message : String(error)}`, adapter: config.adapter }
+    }
     delivered = r.ok
     detail = `HTTP ${r.status} ${r.body}`
   } else if (config.adapter === 'exec') {

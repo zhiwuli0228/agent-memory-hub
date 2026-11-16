@@ -96,6 +96,22 @@ describe('ADR-0015 publish — the outbound API is the team\'s own to define', (
     expect(payload.entries[0]?.title).toBe('B')
   })
 
+  it('a transport-level exception (dead remote) degrades to an error result, never escapes', async () => {
+    const root = tempHub()
+    seed(root, 'A')
+    const yamlPath = join(root, 'hub.yaml')
+    writeFileSync(yamlPath, readFileSync(yamlPath, 'utf8') + 'publish.adapter: http\npublish.endpoint: http://127.0.0.1:1/v1/entries\n')
+    const transport: PublishTransport = async () => {
+      throw new Error('fetch failed: ECONNREFUSED')
+    }
+    const r = await publishCommand(root, [], transport)
+    expect(r.ok).toBe(false)
+    expect(String(r.error)).toContain('publish transport failed')
+    expect(String(r.error)).toContain('ECONNREFUSED')
+    // Watermark untouched — retry-safe after the remote recovers.
+    expect(existsSync(join(root, 'records', 'publish-state.json'))).toBe(false)
+  })
+
   it('a failed outlet reports the error and does not bump the watermark', async () => {
     const root = tempHub()
     seed(root, 'A')

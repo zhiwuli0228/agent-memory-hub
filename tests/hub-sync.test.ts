@@ -104,6 +104,16 @@ describe('ADR-0012 hub-to-hub sync', () => {
     expect(otherEntries[0]?.id).toMatch(/^PRC-/)
   })
 
+  it('pull degrades gracefully when the central hub is unreachable (no crash)', async () => {
+    const localRoot = tempHub()
+    const fetchImpl: HubFetch = async () => {
+      throw new Error('fetch failed: ECONNREFUSED')
+    }
+    const r = await hubSync(localRoot, 'pull', 'http://central.test', undefined, fetchImpl)
+    expect(r.ok).toBe(false)
+    expect(String(r.error)).toContain('central hub unreachable')
+  })
+
   it('sync push --branch creates a personal branch for MR review (ADR-0013)', async () => {
     const { syncCommand } = await import('../src/cli.js')
     const { spawnSync } = await import('node:child_process')
