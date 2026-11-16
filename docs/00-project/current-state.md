@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**🌍 进驻 DSH 社区（2026-11-17 00:10，39c5ed4）**：用户要求把成果发布到 DSH 社区。机制确认：社区分发 = npm 包 + exports/engines.dsh/dshhub 元数据（对照 dsh-keep-awake/@xmanrui/dsh-im），official 精选非门槛。**npm 上线 `dsh-agent-memory-hub`**：0.1.0（初版）→ 0.1.1（修复 patch row name 必须等于 npm 包名——loader 模块解析名，ERR_MODULE_NOT_FOUND 教训）→ 0.1.2（latest，绕开 staged 0.1.1 的 E409）。**社区安装路径实测通过**：desktop profile remove file: 版 → install_bundle npm 包 → applied 零警告 → memory_search/status/propose 注册到 live 工具列表。发布过程踩坑记录：npm 2FA web-auth 需真终端 TTY（非交互管道 auth URL 被遮掩即中断）、浏览器认证不点最终确认留 staged 占位挡后续同号发布、granular token 不豁免 OTP 仅 Classic Automation 豁免。README 增 Install 章节（DSH 插件 / CLI/MCP / 团队服务三入口）。用户须知：**重开 DSH 会话后 memory_status 应显示 dev hub root**（profile override id 命中）；聊天中暴露过的 npm token 建议撤销轮换。
+
 **📊 数据新鲜度透明化（2026-11-16 23:40，10bcb44）**：用户问 OpenCode/Claude Code 里"远程不可用会不会效果很差"→ 回答：**不会**——运行时工具全本地（core 零网络），远端挂了只暂停跨团队新知识可见性，本地检索/提案/批准/全量历史照常；真正"效果差"的场景是本地 hub 从未同步（空/陈旧）。产品化：memory_status 新增 freshness 字段（lastPullAt/lastPublishedAt/lastExtractAt + notes 如"pull: never synced——team knowledge may be missing locally"），任何宿主的 agent 调一次 status 即知知识边界，无需探测远端；memory_status description 写明 outage 语义（模型可读）。真实 hub 验证：诚实显示 pull 未同步 + extract 水位线。133 全绿（core 126 + host 7）。
 
 **🛡️ 远端故障韧性修复（2026-11-16 21:05，63cc59a）**：用户事故报告——"dsh 直连腾讯记忆中心 404 直接导致 host 崩溃"。故障演练抓到 memhub 同类隐患两处：publishCommand http 分支传输层异常（ECONNREFUSED/超时）未捕获会炸出、hubSync pull 中心列表/详情 fetch 同样裸奔。已修：全部降级为 {ok:false, error}（水位线不动，重试安全），测试锁定（transport throw 场景）。**架构回答**：远端挂了不影响客户端——本地 hub 即权威（文件+倒排索引），运行时路径（search/get/status/journal）按 ADR-0001 零网络设计从不碰网；DSH 薄插件只打包 core 无远端调用可崩；远端只是显式命令的发布/同步通道（20-30s abort + 降级报错）。133 全绿（core 126 + host 7）。给用户团队 DSH 直连集成的建议：任何远端调用 try/catch + 超时 + 本地降级，或改走 memhub 架构（运行时走本地）。
