@@ -136,7 +136,7 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   memory_status: {
     description:
-      'Read-only self check: hub root, workspace identity (exact flag is honest — false means synthetic fallback), writer lock holder, metrics, pending count.',
+      'Read-only self check: hub root, workspace identity (exact flag is honest — false means synthetic fallback), writer lock holder, metrics, pending count, DATA FRESHNESS (when this hub last pulled from / published to the remote). Runtime tools never need the remote — if it is down, search/propose/approve keep working; only cross-team NEW knowledge visibility pauses until the next pull.',
     inputSchema: { type: 'object', properties: {} },
     handler: (state) => ({
       hubRoot: state.hubRoot,
@@ -145,6 +145,7 @@ export const TOOLS: Record<string, ToolDef> = {
       lock: lockInfo(state.hubRoot),
       metrics: metricsSnapshot(state.metrics),
       proposals: listProposals(state.hubRoot).length,
+      freshness: readFreshness(state.hubRoot),
     }),
   },
   memory_propose: {
@@ -392,6 +393,29 @@ function workspaceStatus(workspace: ResolvedWorkspace): Record<string, unknown> 
     exact: workspace.exact,
     origin: workspace.origin,
   }
+}
+
+/**
+ * Data freshness — lets any host's agent reason about its knowledge boundary
+ * WITHOUT touching the remote: if the remote is down, everything above still
+ * works; these watermarks just say how recent the cross-team view is.
+ */
+function readFreshness(hubRoot: string): Record<string, unknown> {
+  const readWatermark = (file: string, key: string): string => {
+    try {
+      const raw = JSON.parse(readFileSync(join(hubRoot, 'records', file), 'utf8')) as Record<string, unknown>
+      return typeof raw[key] === 'string' ? (raw[key] as string) : ''
+    } catch {
+      return ''
+    }
+  }
+  const lastPullAt = readWatermark('hub-pull-state.json', 'lastPulledAt')
+  const lastPublishedAt = readWatermark('publish-state.json', 'lastPublishedAt')
+  const lastExtractAt = readWatermark('extract-state.json', 'lastExtractedAt')
+  const stale: string[] = []
+  if (lastPullAt === '') stale.push('pull: never synced from the remote — team knowledge may be missing locally')
+  if (lastPublishedAt === '') stale.push('publish: never published — local approvals are not on the remote yet')
+  return { lastPullAt, lastPublishedAt, lastExtractAt, ...(stale.length > 0 ? { notes: stale } : {}) }
 }
 
 function metricsSnapshot(metrics: SearchMetrics): Record<string, unknown> {
