@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**🔌 宿主支持复验（2026-11-16 09:15，7c2c5b2）**：用户问"是否天然支撑 dsh/OpenCode/ClaudeCode"→ 以实测回答。**DSH ✅**（薄插件 8 工具生产在用）；**Claude Code ✅**（全局配置指向本仓 dist + mcp list Connected + claude -p 真实调用 memory_status 端到端通过——Step 3 复验完成）；**OpenCode ⚠️**（配置已指向本仓，端到端仍被宿主侧 provider key 挡：glm-5.1/mimo 均失效——V32 同因，非 memhub 问题；同一 server 经 Claude Code 真实调用通过）；裸握手冒烟 ✅（11 工具）；Codex/gemini ⏳ 未复验。**注意：改了用户全局配置**（~/.claude.json、~/.config/opencode/opencode.json 的 memory-hub 路径指向新仓，备份 .bak-memhub-20261116）。配置层结论：三宿主协议层全部天然支持（MCP stdio 标准），CLI+萃取协议兜底任何宿主。124 测试全绿。
+
 **📖 路径 A 对接文档发布（2026-11-16 09:25）**：用户定案"就按照 A，写好对接文档"。docs/03-usage/memory-hub-deployment.md：服务器部署（env 表 + systemd 常驻 + 存储定位如实标注）、memhub 侧对接（http 两行配置 / exec 脚本二选一，token 不进 git 的两种方式）、端到端验证（validate → publish → health/search + 幂等重发布语义）、agent 运行时查询样例（curl + node）、故障排查表（401/stale version/连接失败/丢失恢复——从 git main 全量重发布）、与规范的关系（参考实现=行为基准，tests 保证不漂移）。decision-log 补登 ADR-0010~0015 + 路径 A；docs/README 目录地图补 02-spec/03-usage + 团队对接入口四链接。全链路交付就绪：规范 + 参考服务端 + 参考脚本 + 对接文档 + 一致性测试。
 
 **🖥️ 参考服务端落地（2026-11-16 09:10，20cafeb）**：用户问"接口设计腾讯这边的服务支持吗"→ 以可运行代码回答：examples/memory-hub-server.mjs 规范 v1 完整参考实现（单文件零依赖 node:http + JSON 存储；upsert 版本语义/since 增量/search 关键词打分归一化/Bearer 可选鉴权/合并持久化崩溃最多丢 1 秒且按设计可重试）。任何有 node 的机器（腾讯云 CVM/容器/SCF 自定义运行时）即可部署；团队自研合规服务端可无缝替换（memhub 零改动）。端到端测试：真实 spawn server + memhub publish 全链路（写入/全文/stale-version 拒收/增量/检索）。124 全绿（core 117 + host 7）。腾讯情况判断：自部署（CVM/容器）完全支持；若用封闭现成 Team Memory 类产品则经 exec 适配脚本转译。
