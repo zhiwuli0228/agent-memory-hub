@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**🖥️ 参考服务端落地（2026-11-16 09:10，20cafeb）**：用户问"接口设计腾讯这边的服务支持吗"→ 以可运行代码回答：examples/memory-hub-server.mjs 规范 v1 完整参考实现（单文件零依赖 node:http + JSON 存储；upsert 版本语义/since 增量/search 关键词打分归一化/Bearer 可选鉴权/合并持久化崩溃最多丢 1 秒且按设计可重试）。任何有 node 的机器（腾讯云 CVM/容器/SCF 自定义运行时）即可部署；团队自研合规服务端可无缝替换（memhub 零改动）。端到端测试：真实 spawn server + memhub publish 全链路（写入/全文/stale-version 拒收/增量/检索）。124 全绿（core 117 + host 7）。腾讯情况判断：自部署（CVM/容器）完全支持；若用封闭现成 Team Memory 类产品则经 exec 适配脚本转译。
+
 **📜 API 规范由项目定义（2026-11-16 08:45，7342450）**：用户明确"我不定义，是你定义"——API 契约与流程由本项目产出，团队照规范实现。落地：(1) docs/02-spec/memory-hub-api-v1.md 记忆库服务规范（POST /v1/entries 批量 upsert：高版本覆盖/同版本 no-op/低版本 stale-version 拒绝；GET since 增量/单条/search 运行时检索/health；Bearer 鉴权；统一错误；updated 游标与 memhub 水位线同语义）——memhub serve 本身就是同语义参考实现，合规服务端配两行 hub.yaml 即零胶水对接；(2) examples/push-to-hub.mjs 参考发布脚本（exec adapter，stdin 收条目 → POST $MEMORY_HUB_URL/v1/entries + Bearer $MEMORY_HUB_TOKEN）；(3) publish.env.<NAME> 配置（exec 环境变量注入，token 可留系统环境不进 hub.yaml）；(4) exec 改异步 spawn——spawnSync 阻塞事件循环会与同进程 server 死锁（hubSync 同教训，规范冒烟测试抓到）。123 全绿（core 116 + host 7）。
 
 **🚪 ADR-0015 可定义出口实现（2026-11-16 00:20）**：用户澄清——远程服务器是**他们自己部署**、**API 自己定义**、流程正在定义中（腾讯风格为主）；"流水线快速上线"只是假设，现在不考虑。实现 `memhub publish [IDs...]`：出口完全可定义（hub.yaml 平键配置）——`publish.adapter: http`（POST {entries} 到 publish.endpoint + 自定义头）或 `publish.adapter: exec`（跑团队自己的脚本，stdin 收条目 JSON，cwd=hub root——**API 演进只改脚本不改 memhub**，探索阶段推荐）或 none（默认，给配置指引）。载荷无损（id/version/type/title/summary/scope/tags/updated/sourceRefs/body）；裸 publish=增量（水位线 publish-state.json 仅成功后写入，失败可重试）；指定 IDs=精确发布不动水位线；每次成功追加 publish ledger 记录。122 全绿（core 115 + host 7）。流水线双档模式明确搁置，发布节奏保持手动/显式（MR 合入后 publish 或临时 publish）。
