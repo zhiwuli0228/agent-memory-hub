@@ -62,6 +62,14 @@ git tag v0.1.3-20261118 && git push origin main --follow-tags
 | --- | --- |
 | Actions 报 `403 publish` / OIDC 错误 | Trusted Publisher 绑定不对：核对 owner/repo/workflow filename 三项与 `release.yml` 完全一致 |
 | 某包显示 `skip: already on npm` | 该版本已发布过——bump version 重新打 tag；这是幂等保护，不是错误 |
-| check 失败但本地全绿 | CI 上 Node 22 vs 本地版本差异；看 Actions 日志里第一个失败测试 |
+| check 失败但本地全绿 | CI 是 Linux：平台敏感测试（path 分隔符、git 全局配置差异）会在这里暴露——本地全绿≠跨平台绿，以 CI 为准 |
 | Release 没创建 | 两包版本都已在 npm（幂等跳过）——本次 tag 无新版本可发，属正常 |
+| **发布 exit 0 但 `npm view` 查不到新版本** | **首次 Trusted Publisher 发布的正常现象**：日志末尾有 `+ <pkg>@<version>` 和 "Your package is being processed"——npm 正在处理（首次发布需完成 Trusted Publisher 的 Pending validation），几分钟到几小时后索引出现；Release 资产里的 tarball 不受影响 |
 | 需要撤销已发布版本 | `npm unpublish <pkg>@<version>`（72h 内）；npm 不允许同号重发，撤销后必须 bump 新版本 |
+
+## 首发踩坑实录（2026-11-18，供未来排查参照）
+
+1. **runner npm 太旧**：Node 22 自带 npm 10.x——provenance 签名的 OIDC 路径是老的所以签名成功，但 **publish 认证走 Trusted Publisher 需要 npm ≥ 11.5.8**，未认证 PUT 被 npm 以 404 掩盖。解法：workflow 里 `npm install -g npm@latest`。
+2. **两个 Windows-only 绿的测试**：`slugifyDir` 的平台相关 `basename`（POSIX 不认 `\`）；git 局部 config 写在 git init 之前（CI 无全局 user.email 兜底）。**本地全绿 ≠ 跨平台绿**。
+3. **rerun 不重载 workflow**：rerun 重放 tag 上的旧 workflow 快照——改了 workflow 必须 commit + **打新 tag**。
+4. **npm Trusted Publisher 绑定后是 Pending validation**：由**首次成功发布**完成验证（窗口期有限制，过期要重新绑定）。
