@@ -30,6 +30,12 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      # Trusted Publisher publish-auth-via-OIDC needs npm >= 11.5.8. Node 22
+      # on runners ships npm 10.x — provenance signing works there, but the
+      # publish itself would go out unauthenticated (npm 404s it).
+      - name: Upgrade npm for OIDC trusted publishing
+        run: npm install -g npm@latest && npm --version
+
       - name: Publish agent-memory-hub (CLI / MCP)
         id: root
         run: |
