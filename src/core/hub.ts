@@ -67,6 +67,13 @@ export function initHub(root: string): { created: string[]; readme: 'written' | 
   if (!existsSync(join(records, 'ledger.jsonl'))) {
     writeFileSync(join(records, 'ledger.jsonl'), '', 'utf8')
   }
+  // Git-when-ready: a .gitignore written at init time so the day the hub is
+  // pushed to a remote, derived indexes and machine-local secrets (serve
+  // token, lock files) never land in the shared history. Idempotent: an
+  // existing .gitignore is never overwritten (predecessor rule PRC-000009).
+  if (!existsSync(join(root, '.gitignore'))) {
+    atomicWrite(join(root, '.gitignore'), hubGitignoreContent())
+  }
   let readme: 'written' | 'skipped-existing' = 'skipped-existing'
   const readmePath = join(root, HUB_README)
   if (!existsSync(readmePath)) {
@@ -110,6 +117,25 @@ function defaultHubConfig(): string {
     '# publish.adapter: none      # (default) publishing disabled',
     '',
   ].join('\n')
+}
+
+function hubGitignoreContent(): string {
+  return `# agent-memory-hub — git 仓库规划（init 时自动生成，可按需调整）
+#
+# 原则：权威数据全部提交；派生缓存与机器本地状态一律忽略。
+
+# ── 派生缓存：运行时自动重建，提交只会制造合并冲突 ──
+index/
+
+# ── 机器本地状态：绝不能进共享历史 ──
+records/.writer.lock
+records/server.json
+records/server-token
+
+# ── 常规系统噪声 ──
+.DS_Store
+Thumbs.db
+`
 }
 
 function hubReadmeContent(): string {

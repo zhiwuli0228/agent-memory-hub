@@ -58,6 +58,17 @@ git clone git@github.com:<你的私有仓库>.git C:\mem\my-hub
 
 之后 `memhub sync push --branch <名字>` / `hub pull` 走同一条远程——迁移和团队协作共用一条通道。
 
+#### git 仓库里提交什么、忽略什么（init 已自动生成 .gitignore）
+
+| 类别 | 内容 | 处理 |
+| --- | --- | --- |
+| **权威数据**（必须提交） | `knowledge/`（记忆本体）、`history/`（版本历史）、`pending/`（提案——MR 审核对象）、`reports/`（萃取报告）、`records/ledger.jsonl`（审计台账）、`records/sequences.json`（id 计数器）、`config.yaml`（策略） | 提交 |
+| **派生缓存**（忽略） | `index/`（倒排索引，运行时自动重建——提交只会制造合并冲突） | init 自动忽略 |
+| **机器本地状态**（忽略，安全敏感） | `records/.writer.lock`（写锁）、`records/server.json` + `records/server-token`（**本地 serve 的进程信息和凭据——绝不能进共享历史**） | init 自动忽略 |
+| **水位线**（默认提交，团队仓可选忽略） | `records/extract-state.json`、`tencent-state.json` 等——**单人迁移**：提交让新机器延续游标；**多机器团队仓**：各机器游标互覆盖，可在 .gitignore 里追加忽略、每台机器本地留存 | 默认提交 |
+
+分支与节奏（ADR-0014 闭环）：`main` = 已批准 + 已发布的权威记忆；`sync push --branch <名字>` 产生个人分支 = pending 提案，MR 合并即批准落库。远端建议 **PRIVATE**（记忆是敏感资产）。`init` 重跑幂等，已有 `.gitignore` 永不覆盖（可自定义后放心重 init）。
+
 ### 方式 B：直接拷贝（最快，单人迁移）
 
 把 hub 目录整个拷过去（U 盘 / 网盘 / `scp -r`）：

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -22,6 +22,29 @@ describe('initHub', () => {
     expect(readFileSync(join(root, 'records', 'ledger.jsonl'), 'utf8')).toBe('')
     expect(existsSync(join(root, 'hub.yaml'))).toBe(true)
     expect(readFileSync(join(root, HUB_README), 'utf8')).toContain('模型永远不能自批')
+  })
+
+  it('writes a .gitignore that keeps derived indexes and machine-local secrets out of git', () => {
+    const root = tempRoot()
+    initHub(root)
+    const gitignore = readFileSync(join(root, '.gitignore'), 'utf8')
+    // Derived caches: rebuilt at runtime, committing them only creates merge conflicts.
+    expect(gitignore).toContain('index/')
+    // Machine-local state, incl. the serve credential — must NEVER be shared.
+    expect(gitignore).toContain('records/.writer.lock')
+    expect(gitignore).toContain('records/server-token')
+    expect(gitignore).toContain('records/server.json')
+    // Watermarks stay tracked by default (single-machine migration carries them);
+    // team repos may ignore them per the migration guide.
+    expect(gitignore).not.toContain('extract-state')
+    expect(gitignore).not.toContain('ledger.jsonl')
+  })
+
+  it('never overwrites an existing .gitignore (predecessor rule PRC-000009)', () => {
+    const root = tempRoot()
+    writeFileSync(join(root, '.gitignore'), 'node_modules\n')
+    initHub(root)
+    expect(readFileSync(join(root, '.gitignore'), 'utf8')).toBe('node_modules\n')
   })
 
   it('is idempotent and never overwrites an existing MEMORY-HUB.md', () => {
