@@ -47,7 +47,11 @@ export function workspaceIdFromOrigin(origin: string): string {
 }
 
 export function slugifyDir(path: string): string {
-  const slug = basename(path)
+  // Split on BOTH separators explicitly: path.basename is platform-aware
+  // (Windows-only '\' on win32, '/' on POSIX) and hubs legitimately carry
+  // cross-platform path strings.
+  const lastSegment = path.split(/[\\/]/).filter(Boolean).pop() ?? ''
+  const slug = lastSegment
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, '-')
     .replace(/^-+|-+$/g, '')

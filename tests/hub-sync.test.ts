@@ -123,10 +123,13 @@ describe('ADR-0012 hub-to-hub sync', () => {
     // A local bare repo stands in for the team's git service (real push, no network).
     const bare = mkdtempSync(join(tmpdir(), 'amh-bare-'))
     spawnSync('git', ['init', '--bare', bare], { encoding: 'utf8' })
+    // git init FIRST, then local identity config: writing repo-local config
+    // before the repo exists silently fails on CI (no global user.email
+    // fallback there — locally it only worked because of global config).
+    expect(syncCommand(root, 'init', bare).ok).toBe(true)
     spawnSync('git', ['config', 'user.email', 't@t'], { cwd: root, encoding: 'utf8' })
     spawnSync('git', ['config', 'user.name', 't'], { cwd: root, encoding: 'utf8' })
 
-    expect(syncCommand(root, 'init', bare).ok).toBe(true)
     const push = syncCommand(root, 'push', undefined, undefined, 'alice')
     expect(push.pushed).toBe('yes')
     expect(push.branch).toBe('alice')

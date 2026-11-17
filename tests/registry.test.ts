@@ -22,8 +22,10 @@ describe('identity derivation', () => {
     expect(workspaceIdFromOrigin('https://github.com/Owner/Repo.git')).toBe('owner-repo')
   })
 
-  it('slugifies a directory name', () => {
+  it('slugifies a directory name (both separators, both platforms)', () => {
     expect(slugifyDir('E:\\009workspace\\my project')).toBe('my-project')
+    expect(slugifyDir('/home/user/my project')).toBe('my-project')
+    expect(slugifyDir('\\\\server\\share\\Team Ops')).toBe('team-ops')
   })
 })
 
