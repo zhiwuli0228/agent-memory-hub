@@ -1,0 +1,73 @@
+# Release pipeline for the two published packages in this repo:
+#   - agent-memory-hub        (repo root — CLI / MCP server)
+#   - dsh-agent-memory-hub    (host/dsh — DSH plugin shell, bundles core)
+#
+# Trigger: push any `v*` tag. Each package publishes its OWN package.json
+# version; a version already present on npm is skipped (idempotent re-runs).
+# npm publish uses Trusted Publisher (OIDC) — no token, no OTP. The two
+# packages must be bound to this repo + this workflow file on npmjs.com
+# (see docs/06-operations/release.md).
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # create the GitHub Release
+  id-token: write   # npm Trusted Publisher (OIDC)
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish agent-memory-hub (CLI / MCP)
+        id: root
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "agent-memory-hub@$VERSION" version >/dev/null 2>&1; then
+            echo "skip: agent-memory-hub@$VERSION is already on npm"
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          else
+            npm ci
+            npm run check
+            npm pack --pack-destination "$RUNNER_TEMP"
+            npm publish --provenance --access public
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish dsh-agent-memory-hub (DSH plugin)
+        id: dsh
+        working-directory: host/dsh
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "dsh-agent-memory-hub@$VERSION" version >/dev/null 2>&1; then
+            echo "skip: dsh-agent-memory-hub@$VERSION is already on npm"
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          else
+            npm ci
+            npm run check
+            npm pack --pack-destination "$RUNNER_TEMP"
+            npm publish --provenance --access public
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        if: steps.root.outputs.published == 'true' || steps.dsh.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP"/*.tgz \
+            --generate-notes \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Packages released by this tag are listed in the attached tarballs (agent-memory-hub, dsh-agent-memory-hub). A package whose version was already on npm was skipped."
