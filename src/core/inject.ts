@@ -57,10 +57,10 @@ export function preflight(
   hubRoot: string,
   workspaceId: string,
   intent: string,
-  options?: PreflightOptions,
+  options?: PreflightOptions & { teamId?: string },
 ): PreflightResult {
   const limit = options?.limit ?? 3
-  const hits = search(index, intent, { workspaceId, detail: 'L0', limit, types: options?.types })
+  const hits = search(index, intent, { workspaceId, teamId: options?.teamId, detail: 'L0', limit, types: options?.types })
   const surfaced = hits.map((hit) => ({
     id: hit.id,
     version: hit.version,

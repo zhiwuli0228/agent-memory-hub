@@ -291,6 +291,7 @@ export const TOOLS: Record<string, ToolDef> = {
     },
     handler: (state, args) => {
       const result = preflight(state.index, state.hubRoot, state.workspace.workspaceId, String(args['intent']), {
+        teamId: (args['team'] as string | undefined) ?? process.env['MEMHUB_TEAM'],
         limit: typeof args['limit'] === 'number' ? args['limit'] : undefined,
         types: args['types'] as string[] | undefined,
       })

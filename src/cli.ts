@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
@@ -215,7 +216,7 @@ export function main(argv: string[]): number {
         // locations for a memory hub.
         const explicitRoot = process.argv.includes('--root') ? args.root : undefined
         const root = resolve(explicitRoot ?? process.env['MEMHUB_ROOT'] ?? join(homedir(), 'mem-hub'))
-        const result = installHostCommand(host, root, { home: args.home, setEnv: args.setEnv })
+        const result = installHostCommand(host, root, { home: args.home, setEnv: args.setEnv, team: args.team })
         out(result)
         return result.ok ? 0 : 1
       }
@@ -824,7 +825,7 @@ function writeJsonFile(file: string, value: Record<string, unknown>): string {
  * TOML, which we do not rewrite programmatically; the outcome points the
  * human at the exact block to paste.
  */
-export function installHostCommand(host: HostTarget, root: string, opts: { home?: string; setEnv?: boolean } = {}): InstallOutcome {
+export function installHostCommand(host: HostTarget, root: string, opts: { home?: string; setEnv?: boolean; team?: string } = {}): InstallOutcome {
   const home = opts.home ?? homedir()
   const hubRoot = resolve(root)
   initHub(hubRoot)
@@ -844,7 +845,7 @@ export function installHostCommand(host: HostTarget, root: string, opts: { home?
     cfg['mcpServers'] = servers
     const backup = writeJsonFile(configFile, cfg)
     nextStep = '重启 Claude Code 后 `claude mcp list` 应显示 memory-hub ✓ Connected'
-    return finishInstall({ ok: true, host, configFile, action, envSet: false, hubRoot, backup, nextStep }, opts)
+    return finishInstall({ ok: true, host, configFile, action, envSet: false, hubRoot, backup, nextStep }, { ...opts, team: opts.team })
   }
 
   if (host === 'opencode') {
@@ -886,12 +887,16 @@ export function installHostCommand(host: HostTarget, root: string, opts: { home?
   }
 }
 
-function finishInstall(outcome: InstallOutcome, opts: { setEnv?: boolean }): InstallOutcome {
+function finishInstall(outcome: InstallOutcome, opts: { setEnv?: boolean; team?: string }): InstallOutcome {
   // Persist the hub location for every future shell/host: without it a host
   // without its own root config would fall back to a throwaway temp dir.
   if (opts.setEnv !== false && process.platform === 'win32') {
     try {
       spawnSync('setx', ['MEMHUB_ROOT', outcome.hubRoot], { encoding: 'utf8' })
+      if (opts.team !== undefined && opts.team !== '') {
+        spawnSync('setx', ['MEMHUB_TEAM', opts.team], { encoding: 'utf8' })
+        outcome.nextStep += '；MEMHUB_TEAM=' + opts.team + '（该宿主声明所属团队，团队/部门条目可见）'
+      }
       outcome.envSet = true
       outcome.nextStep += '；MEMHUB_ROOT 已写入用户环境变量（新开的终端生效）'
     } catch {
