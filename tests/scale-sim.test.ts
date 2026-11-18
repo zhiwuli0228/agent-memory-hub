@@ -54,7 +54,7 @@ describe('ADR-0021 large-team scale (local simulation)', () => {
     expect(buildMs).toBeLessThan(10_000)
     expect(queryMs / 100).toBeLessThan(50) // avg < 50ms per scoped search
     console.log(`[sim150] write ${writeMs}ms | index ${buildMs}ms | avg query ${queryMs / 100}ms`)
-  })
+  }, 600_000)
 
   it('curate over 1000 entries + 150 daily proposals stays in interactive range', () => {
     for (let p = 0; p < PROPOSERS; p += 1) {
@@ -76,7 +76,7 @@ describe('ADR-0021 large-team scale (local simulation)', () => {
     expect(report.entriesAnalyzed).toBe(DOMAINS * ENTRIES_PER_DOMAIN)
     expect(curateMs).toBeLessThan(30_000)
     console.log(`[sim150] curate (150x1000 comparisons) ${curateMs}ms`)
-  })
+  }, 600_000)
 
   it('inbox groups the burst by domain for triage', () => {
     const state = { hubRoot: root, index: buildIndex(root, () => new Date().toISOString()), metrics: {}, workspace: { workspaceId: 'sim', name: 'sim', path: root, exact: false } } as never

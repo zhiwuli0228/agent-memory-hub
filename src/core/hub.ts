@@ -123,6 +123,11 @@ function hubGitignoreContent(): string {
   return `# agent-memory-hub — git 仓库规划（init 时自动生成，可按需调整）
 #
 # 原则：权威数据全部提交；派生缓存与机器本地状态一律忽略。
+# ADR-0023 三级联邦：knowledge/（共享）走 git；knowledge-private/（个人层，
+# 按人不去重）永不进 git —— 团队/部门仓只承载共享知识。
+
+# ── 个人私有记忆：按人划分，永不外流 ──
+knowledge-private/
 
 # ── 派生缓存：运行时自动重建，提交只会制造合并冲突 ──
 index/

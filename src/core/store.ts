@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, rmSync, readdirSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, rmSync, readdirSync, statSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { atomicWrite } from './atomic.js'
 import { ErrorCode, HubError } from './errors.js'
 import { historyDir, knowledgeDir, pendingDir } from './hub.js'
@@ -88,12 +88,15 @@ export function renderKnowledgeMarkdown(fm: KnowledgeFrontmatter, body: string):
 
 /** Read one knowledge entry by id (searches all type dirs). */
 export function getEntry(root: string, id: string): KnowledgeEntry {
-  for (const type of readdirSync(join(root, 'knowledge'))) {
-    const path = entryPath(root, type as KnowledgeType, id)
-    if (!existsSync(path)) continue
-    const raw = readFileSync(path, 'utf8')
-    const parsed = parseKnowledgeFile(raw)
-    return toEntry(parsed.frontmatter, parsed.body, path)
+  for (const base of [join(root, 'knowledge'), join(root, 'knowledge-private')]) {
+    if (!existsSync(base)) continue
+    for (const type of readdirSync(base)) {
+      const path = join(base, type, `${id}.md`)
+      if (!existsSync(path)) continue
+      const raw = readFileSync(path, 'utf8')
+      const parsed = parseKnowledgeFile(raw)
+      return toEntry(parsed.frontmatter, parsed.body, path)
+    }
   }
   throw new HubError(ErrorCode.E_NOT_FOUND, `knowledge entry not found: ${id}`, { id })
 }
@@ -113,20 +116,24 @@ function toEntry(fm: KnowledgeFrontmatter, body: string, path: string): Knowledg
 /** List all entries; soft-removed included unless includeSoftRemoved=false. */
 export function listEntries(root: string, options?: { includeSoftRemoved?: boolean }): KnowledgeEntry[] {
   const out: KnowledgeEntry[] = []
-  const typesRoot = join(root, 'knowledge')
-  if (!existsSync(typesRoot)) return out
-  for (const type of readdirSync(typesRoot)) {
-    const dir = knowledgeDir(root, type)
-    for (const file of readdirSync(dir)) {
-      if (!file.endsWith('.md')) continue
-      const path = join(dir, file)
-      try {
-        const parsed = parseKnowledgeFile(readFileSync(path, 'utf8'))
-        const entry = toEntry(parsed.frontmatter, parsed.body, path)
-        if (options?.includeSoftRemoved !== true && entry.softRemoved) continue
-        out.push(entry)
-      } catch {
-        // Unreadable entry: skip, never break listing (index rebuildable).
+  // ADR-0023: local views span shared knowledge/ AND personal knowledge-private/
+  // (gitignored); the git repos only ever see the shared half.
+  for (const base of [join(root, 'knowledge'), join(root, 'knowledge-private')]) {
+    if (!existsSync(base)) continue
+    for (const type of readdirSync(base)) {
+      const dir = join(base, type)
+      if (!existsSync(dir)) continue
+      for (const file of readdirSync(dir)) {
+        if (!file.endsWith('.md')) continue
+        const path = join(dir, file)
+        try {
+          const parsed = parseKnowledgeFile(readFileSync(path, 'utf8'))
+          const entry = toEntry(parsed.frontmatter, parsed.body, path)
+          if (options?.includeSoftRemoved !== true && entry.softRemoved) continue
+          out.push(entry)
+        } catch {
+          // Unreadable entry: skip, never break listing (index rebuildable).
+        }
       }
     }
   }
@@ -142,23 +149,22 @@ export function listEntries(root: string, options?: { includeSoftRemoved?: boole
 const titleCache = new Map<string, { stamp: string; titles: Map<string, string> }>()
 
 function titleMap(root: string): Map<string, string> {
-  const typesRoot = join(root, 'knowledge')
+  const bases = [join(root, 'knowledge'), join(root, 'knowledge-private')].filter((b) => existsSync(b))
   let stamp = ''
-  if (existsSync(typesRoot)) {
-    for (const t of readdirSync(typesRoot)) {
-      const dir = join(typesRoot, t)
-      stamp += `${t}:${Math.floor(statSync(dir).mtimeMs)};`
+  for (const base of bases) {
+    for (const t of readdirSync(base)) {
+      stamp += `${base}:${Math.floor(statSync(join(base, t)).mtimeMs)};`
     }
   }
   const hit = titleCache.get(root)
   if (hit !== undefined && hit.stamp === stamp) return hit.titles
   const titles = new Map<string, string>()
-  if (existsSync(typesRoot)) {
-    for (const type of readdirSync(typesRoot)) {
-      for (const file of readdirSync(join(typesRoot, type))) {
+  for (const base of bases) {
+    for (const type of readdirSync(base)) {
+      for (const file of readdirSync(join(base, type))) {
         if (!file.endsWith('.md')) continue
         try {
-          const parsed = parseKnowledgeFile(readFileSync(join(typesRoot, type, file), 'utf8'))
+          const parsed = parseKnowledgeFile(readFileSync(join(base, type, file), 'utf8'))
           if (parsed.frontmatter.extra['soft_removed'] === true) continue
           titles.set(parsed.frontmatter.title, parsed.frontmatter.id)
         } catch {
@@ -216,12 +222,16 @@ export function commitKnowledge(
   const ts = helpers.nowIsoValue ?? nowIso()
   if (input.id === undefined) {
     // create
-    const conflict = findTitleConflict(root, input.title)
-    if (conflict !== null) {
-      throw new HubError(ErrorCode.E_CONFLICT, `an accepted entry with the same title exists: ${conflict.frontmatter.id}`, {
-        existingId: conflict.frontmatter.id,
-        existingTitle: conflict.frontmatter.title,
-      })
+    // ADR-0023: personal (private) memories are written per-person WITHOUT
+    // dedup — "每个人不去重" — no title-conflict gate on the private tier.
+    if (input.scope.level !== 'private') {
+      const conflict = findTitleConflict(root, input.title)
+      if (conflict !== null) {
+        throw new HubError(ErrorCode.E_CONFLICT, `an accepted entry with the same title exists: ${conflict.frontmatter.id}`, {
+          existingId: conflict.frontmatter.id,
+          existingTitle: conflict.frontmatter.title,
+        })
+      }
     }
     const id = nextKnowledgeId(root, input.type, helpers.readSequences, helpers.writeSequences)
     const fm: KnowledgeFrontmatter = {
@@ -238,7 +248,11 @@ export function commitKnowledge(
       last_verified: ts,
       extra: input.expiresAt !== undefined ? { expires_at: input.expiresAt } : {},
     }
-    const path = entryPath(root, input.type, id)
+    // ADR-0023 three-tier federation: private entries live under
+    // knowledge-private/ (gitignored) so team/department git repos carry
+    // ONLY shared knowledge.
+    const path = input.scope.level === 'private' ? join(root, 'knowledge-private', input.type, `${id}.md`) : entryPath(root, input.type, id)
+    mkdirSync(dirname(path), { recursive: true })
     atomicWrite(path, renderKnowledgeMarkdown(fm, input.body))
     helpers.appendLedger(root, {
       ts,
