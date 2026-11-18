@@ -60,6 +60,12 @@ jobs:
             echo "skip: dsh-agent-memory-hub@$VERSION is already on npm"
             echo "published=false" >> "$GITHUB_OUTPUT"
           else
+            # The file:../.. dependency needs the core package BUILT (dist/ +
+            # .d.ts) before host typecheck resolves 'agent-memory-hub'. The
+            # root step may have been skipped (version already on npm), so
+            # install and build the core here unconditionally.
+            npm install --prefix ../..
+            npm run build --prefix ../..
             npm ci
             npm run check
             npm pack --pack-destination "$RUNNER_TEMP"
