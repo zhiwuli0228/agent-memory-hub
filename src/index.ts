@@ -114,3 +114,14 @@ export type { ValidationReport, ValidationIssue } from './core/validate.js'
 // embedded DSH sidebar panel). Host adapters embed these directly.
 export { startServer, serverUrl, type ServeOptions } from './transport/http.js'
 export { createApiState, gradeFor, type ApiState, type ApprovalGrade } from './transport/server.js'
+
+// Curation analysis (ADR-0017): dedupe / merge / aging review for scheduled
+// extraction runs. Pure analysis — the human gate does the landing.
+export {
+  analyzeCurate,
+  jaccard,
+  type CurateKind,
+  type CurateOptions,
+  type CurateReport,
+  type CurateRow,
+} from './core/curate.js'

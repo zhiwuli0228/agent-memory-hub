@@ -11,6 +11,7 @@ import { acquireLock, assertFencing, lockInfo, releaseLock } from './core/lock.j
 import { registerWorkspace, resolveWorkspace } from './core/registry.js'
 import { buildIndex, emptyMetrics, search } from './core/search.js'
 import { commitKnowledge, getEntry, listEntries, listProposals } from './core/store.js'
+import { analyzeCurate } from './core/curate.js'
 import { validateHub } from './core/validate.js'
 import { requireApproval } from './core/approval.js'
 import { createApiState } from './transport/server.js'
@@ -374,6 +375,35 @@ export function main(argv: string[]): number {
           return 0
         }
         throw new HubError(ErrorCode.E_VALIDATION, 'usage: memhub extract <material|done> [--since <iso>]\n  material: what changed since the last watermark (feed to your workflow agent)\n  done:     advance the watermark after a successful extraction run')      }
+      case 'curate': {
+        // ADR-0017: scheduled-extraction governance — dedupe / merge / aging
+        // review over the pending queue. Pure analysis; landing stays human.
+        const root = requireHub(args)
+        const report = analyzeCurate(root, {
+          duplicateThreshold: typeof args.limit === 'number' ? args.limit : undefined,
+        })
+        // Persist the report so runs are comparable and auditable.
+        const reportsDir = join(root, 'reports')
+        mkdirSync(reportsDir, { recursive: true })
+        const stamp = report.generatedAt.replace(/[:.]/g, '-')
+        atomicWrite(join(reportsDir, `curate-${stamp}.json`), JSON.stringify(report, null, 2))
+        if (args.json) {
+          out({ ...report, reportFile: join('reports', `curate-${stamp}.json`) }, true)
+          return 0
+        }
+        out({
+          ok: true,
+          proposalsAnalyzed: report.proposalsAnalyzed,
+          entriesAnalyzed: report.entriesAnalyzed,
+          duplicates: report.duplicates.length,
+          merges: report.merges.length,
+          aging: report.aging.length,
+          fresh: report.fresh.length,
+          reportFile: join('reports', `curate-${stamp}.json`),
+          nextStep: '打开面板或 memhub inbox list 逐组处理；duplicate 批准时携带 supersedes，aging 复审后 deprecate 或续期',
+        })
+        return 0
+      }
       case 'sync': {
         const root = requireHub(args)
         const sub = args._[1]
@@ -954,6 +984,9 @@ function printHelp(): void {
   memhub extract material [--since]   extraction material since the watermark (JSON for
                                       ANY scheduler's agent: cron / workflow platform / CI)
   memhub extract done [--since iso]   advance the extraction watermark after a run
+  memhub curate [--json]              governance for the pending queue: dedupe /
+                                      merge / aging review (writes reports/);
+                                      schedule it with any cron or DSH task
   memhub hub <push|pull> --remote <central-serve-url> [--since iso]
                                       ADR-0012 hub-to-hub sync: push local approved entries
                                       as central proposals (central inbox = review gate);
