@@ -91,10 +91,22 @@ async function refreshInbox() {
   refreshStatus();
   const i = await j('/api/inbox');
   inbox = i.data.proposals ?? [];
+  const groups = i.data.groups ?? {};
   const el = document.getElementById('inbox');
   if (inbox.length === 0) { el.innerHTML = '<div class="empty">✓ inbox 清空，无待审条目</div>'; }
   else {
-    el.innerHTML = inbox.map(p => \`
+    // ADR-0021 large-team triage: group by domain so each reviewer sees
+    // their own team's slice first; no-domain proposals render last.
+    const byDomain = {};
+    for (const p of inbox) {
+      const key = p.domain ?? '(未分域)';
+      (byDomain[key] = byDomain[key] ?? []).push(p);
+    }
+    const domainTabs = Object.keys(groups).length > 1
+      ? '<div class="meta">按域分布: ' + Object.entries(groups).map(([g, n]) => esc(g) + '×' + n).join(' · ') + '</div>'
+      : '';
+    el.innerHTML = domainTabs + Object.entries(byDomain).map(([dom, list]) => \`
+      <h3 style="margin:10px 0 4px">◤ \${esc(dom)} (\${list.length})</h3>\` + list.map(p => \`
       <div class="card" id="card-\${p.id}">
         <h3>\${esc(p.title)} <span class="grade \${p.grade}">\${p.grade === 'individual' ? '逐条审批' : '可批量'}</span></h3>
         <div class="meta">\${esc(p.id)} · \${esc(p.type)} · \${esc((p.tags ?? []).join(', '))}</div>
@@ -103,7 +115,7 @@ async function refreshInbox() {
           <button class="primary" onclick="approveOne('\${p.id}')">批准</button>
           <button class="danger" onclick="rejectOne('\${p.id}')">拒绝</button>
         </div>
-      </div>\`).join('');
+      </div>\`).join('')).join('');
   }
   const batchables = inbox.filter(p => p.grade === 'batch');
   document.getElementById('batchbar').style.display = batchables.length > 1 ? 'block' : 'none';
