@@ -46,6 +46,7 @@ interface CliArgs {
   setEnv?: boolean
   host?: string
   token?: string
+  team?: string
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -120,6 +121,10 @@ function parseArgs(argv: string[]): CliArgs {
         break
       case '--token':
         args.token = argv[i + 1]
+        i += 1
+        break
+      case '--team':
+        args.team = argv[i + 1]
         i += 1
         break
       default:
@@ -256,10 +261,12 @@ export function main(argv: string[]): number {
         const state = createState(root, args.workspace)
         const hits = search(state.index, query, {
           workspaceId: state.workspace.workspaceId,
+          // ADR-0019: --team widens the viewer to a team domain (global ∪ team ∪ project).
+          teamId: args.team,
           detail: args.detail ?? 'L1',
           limit: args.limit,
         })
-        out({ hits, workspace: state.workspace.workspaceId }, args.json)
+        out({ hits, workspace: state.workspace.workspaceId, team: args.team ?? null }, args.json)
         return 0
       }
       case 'get': {
@@ -543,6 +550,7 @@ export async function hubSync(
             title: e.frontmatter.title,
             summary: e.frontmatter.summary,
             tags: e.frontmatter.tags,
+            scope: e.frontmatter.scope, // ADR-0019: team/project scope travels with the entry
             body: readFileSync(e.path, 'utf8').split('---')[2]?.trim() ?? '',
             sourceRefs: [`hub:${e.frontmatter.id}@v${e.frontmatter.version}`],
             originId: e.frontmatter.id,

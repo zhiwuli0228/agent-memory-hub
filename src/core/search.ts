@@ -112,16 +112,29 @@ function termBag(entry: KnowledgeEntry): Map<string, number> {
 }
 
 // ---------------------------------------------------------------------------
-// Scope filtering (ADR-0002: project ∪ global; domains optional later)
+// Scope filtering (ADR-0002 + ADR-0019: viewer declares its access scope —
+// global is always visible; a viewer may declare a team domain and/or a
+// project workspace, and sees the union of those + global)
 // ---------------------------------------------------------------------------
 
-/** Ancestor-chain visibility: the workspace sees itself + global (+ domains when configured). */
-export function isVisible(scope: KnowledgeScope, workspaceId: string): boolean {
+export interface ScopeViewer {
+  /** Project workspace the viewer operates in (project-level entries). */
+  workspaceId?: string
+  /** Team domain the viewer belongs to (`domainId` in frontmatter — the reserved middle tier, now the team tier). */
+  teamId?: string
+}
+
+/** Union visibility: global ∪ declared team ∪ declared project. */
+export function isVisibleIn(scope: KnowledgeScope, viewer: ScopeViewer): boolean {
   if (scope.level === 'global') return true
-  if (scope.level === 'project') return scope.workspaceId === workspaceId
-  // Domain entries are visible from their member workspaces; without a
-  // configured domains table (V0.1) treat them as invisible to projects.
+  if (scope.level === 'domain') return viewer.teamId !== undefined && scope.domainId === viewer.teamId
+  if (scope.level === 'project') return viewer.workspaceId !== undefined && scope.workspaceId === viewer.workspaceId
   return false
+}
+
+/** Legacy single-workspace view: the workspace sees itself + global only. */
+export function isVisible(scope: KnowledgeScope, workspaceId: string): boolean {
+  return isVisibleIn(scope, { workspaceId })
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +176,8 @@ export interface SearchOptions {
    * context and the hub is a shared knowledge base by design.
    */
   workspaceId?: string
+  /** Team domain the viewer belongs to (ADR-0019): adds that team's entries to the union. */
+  teamId?: string
   detail?: DetailLevel
   minScore?: number
   limit?: number
@@ -174,7 +189,7 @@ const BM25_B = 0.75
 const LOCAL_BOOST = 1.2
 
 /** Run a query against the index (pure read). */
-export function search(index: SearchIndex, query: string, options: SearchOptions): SearchHit[] {
+export function search(index: SearchIndex, query: string, options: SearchOptions = {}): SearchHit[] {
   const queryTerms = tokenize(query)
   if (queryTerms.length === 0) return []
   const avgLength = index.docs.size === 0 ? 1 : index.totalLength / index.docs.size
@@ -186,7 +201,8 @@ export function search(index: SearchIndex, query: string, options: SearchOptions
     for (const docId of posting) {
       const doc = index.docs.get(docId)
       if (doc === undefined) continue
-      if (options.workspaceId !== undefined && !isVisible(doc.entry.frontmatter.scope, options.workspaceId)) continue
+      const viewer = { workspaceId: options.workspaceId, teamId: options.teamId }
+      if ((options.workspaceId !== undefined || options.teamId !== undefined) && !isVisibleIn(doc.entry.frontmatter.scope, viewer)) continue
       if (options.types !== undefined && !options.types.includes(doc.entry.frontmatter.type)) continue
       const tf = doc.tf.get(term) ?? 0
       const norm = tf * (BM25_K1 + 1) / (tf + BM25_K1 * (1 - BM25_B + BM25_B * (doc.length / avgLength)))
@@ -199,11 +215,12 @@ export function search(index: SearchIndex, query: string, options: SearchOptions
     if (score < minScore) continue
     const doc = index.docs.get(docId)
     if (doc === undefined) continue
-    // Local boost: entries of the querying workspace rank higher (predecessor DEC-000002).
-    const boosted =
-      doc.entry.frontmatter.scope.level === 'project' && doc.entry.frontmatter.scope.workspaceId === options.workspaceId
-        ? score * LOCAL_BOOST
-        : score
+    // Local boost: entries of the querying scope (project or team) rank higher (predecessor DEC-000002, ADR-0019).
+    const scope = doc.entry.frontmatter.scope
+    const inScope =
+      (scope.level === 'project' && options.workspaceId !== undefined && scope.workspaceId === options.workspaceId) ||
+      (scope.level === 'domain' && options.teamId !== undefined && scope.domainId === options.teamId)
+    const boosted = inScope ? score * LOCAL_BOOST : score
     hits.push(toHit(doc, boosted, options.detail ?? 'L1'))
   }
   hits.sort((a, b) => b.score - a.score)

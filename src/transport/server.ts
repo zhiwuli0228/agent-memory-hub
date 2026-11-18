@@ -10,7 +10,7 @@ import { registerWorkspace, resolveWorkspace, type ResolvedWorkspace } from '../
 import { readJournal } from '../core/journal.js'
 import { readLedger } from '../core/ledger.js'
 import { autoCommit } from './autocommit.js'
-import type { KnowledgeType } from '../core/types.js'
+import type { KnowledgeScope, KnowledgeType } from '../core/types.js'
 
 /**
  * Serve panel HTTP API — pure request handler (createServer is a thin
@@ -159,12 +159,17 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
         const limitNum = Number(body?.['limit'])
         const wsRaw = body?.['workspace']
         const workspaceId = wsRaw === undefined || wsRaw === 'all' || wsRaw === '' ? undefined : String(wsRaw)
+        // ADR-0019: the caller declares its access scope — a project and/or a
+        // team domain. Visibility = global ∪ declared team ∪ declared project.
+        const teamRaw = body?.['team']
+        const teamId = teamRaw === undefined || teamRaw === '' ? undefined : String(teamRaw)
         const hits = search(state.index, query, {
           workspaceId,
+          teamId,
           detail,
           limit: Number.isFinite(limitNum) && limitNum > 0 ? limitNum : undefined,
         })
-        return ok({ query, workspace: workspaceId ?? 'all', hits })
+        return ok({ query, workspace: workspaceId ?? (teamId !== undefined ? `team:${teamId}` : 'all'), hits })
       }
       case 'POST /api/propose': {
         // ADR-0012: remote hubs push their approved entries here as proposals —
@@ -177,6 +182,14 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
         if (typeof type !== 'string' || typeof title !== 'string' || typeof summary !== 'string' || typeof bodyText !== 'string') {
           return bad(400, 'propose requires type, title, summary, body')
         }
+        // ADR-0019: the pushed entry's scope travels with it (team domains
+        // especially). Validate the shape; fall back to the receiving hub's
+        // project scope when absent/invalid.
+        const rawScope = body?.['scope'] as { level?: string; domainId?: string; workspaceId?: string } | undefined
+        let scope: KnowledgeScope = { level: 'project', workspaceId: state.workspace.workspaceId }
+        if (rawScope?.level === 'global') scope = { level: 'global' }
+        else if (rawScope?.level === 'domain' && typeof rawScope.domainId === 'string' && rawScope.domainId !== '') scope = { level: 'domain', domainId: rawScope.domainId }
+        else if (rawScope?.level === 'project' && typeof rawScope.workspaceId === 'string' && rawScope.workspaceId !== '') scope = { level: 'project', workspaceId: rawScope.workspaceId }
         return withWriteLock(state.hubRoot, () => {
           const proposal = createProposal(
             state.hubRoot,
@@ -184,7 +197,7 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
               type: type as KnowledgeType,
               title,
               summary,
-              scope: { level: 'project', workspaceId: state.workspace.workspaceId },
+              scope,
               tags: Array.isArray(body?.['tags']) ? (body?.['tags'] as string[]).map(String) : [],
               body: bodyText,
               sourceRefs: Array.isArray(body?.['sourceRefs']) ? (body?.['sourceRefs'] as string[]).map(String) : [`remote:${new Date().toISOString()}`],
