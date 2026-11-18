@@ -20,25 +20,44 @@ export const inject = ['tools']
 
 const PANEL_PORT = 7777
 
+function listenWithRetry(ctx: HostContext, state: ReturnType<typeof hub.createApiState>, attempts = 4): void {
+  let server: ReturnType<typeof hub.startServer>
+  try {
+    server = hub.startServer(state, { port: PANEL_PORT, host: '127.0.0.1' })
+  } catch (error) {
+    if (attempts > 1) {
+      // The previous mount's server may still be draining keep-alive
+      // connections; its teardown closes them, so retry shortly.
+      setTimeout(() => listenWithRetry(ctx, state, attempts - 1), 1000)
+      return
+    }
+    ctx.logger?.warn(`agent-memory-hub-dsh: panel server failed to start: ${error instanceof Error ? error.message : String(error)}`)
+    return
+  }
+  server.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EADDRINUSE') {
+      ctx.logger?.info(`agent-memory-hub-dsh: panel port ${PANEL_PORT} already serving — reusing it`)
+      return
+    }
+    ctx.logger?.warn(`agent-memory-hub-dsh: panel server error: ${error.message}`)
+  })
+  ctx.logger?.info(`agent-memory-hub-dsh: panel console serving at http://127.0.0.1:${PANEL_PORT}/`)
+  ctx.effect?.(() => () => {
+    try {
+      // close() alone waits for keep-alive connections to drain, which can
+      // block the port for seconds; cut them so a re-mount binds immediately.
+      server.closeAllConnections()
+      server.close()
+    } catch {
+      // already closed
+    }
+  }, `${name}-panel`)
+}
+
 function startPanelServer(ctx: HostContext, root: string): void {
   try {
     const state = hub.createApiState(root)
-    const server = hub.startServer(state, { port: PANEL_PORT, host: '127.0.0.1' })
-    server.on('error', (error: NodeJS.ErrnoException) => {
-      if (error.code === 'EADDRINUSE') {
-        ctx.logger?.info(`agent-memory-hub-dsh: panel port ${PANEL_PORT} already serving (manual serve or another session) — reusing it`)
-        return
-      }
-      ctx.logger?.warn(`agent-memory-hub-dsh: panel server error: ${error.message}`)
-    })
-    ctx.logger?.info(`agent-memory-hub-dsh: panel console serving at http://127.0.0.1:${PANEL_PORT}/ (hub: ${root})`)
-    ctx.effect?.(() => () => {
-      try {
-        server.close()
-      } catch {
-        // already closed
-      }
-    }, `${name}-panel`)
+    listenWithRetry(ctx, state)
   } catch (error) {
     ctx.logger?.warn(`agent-memory-hub-dsh: panel server failed to start: ${error instanceof Error ? error.message : String(error)}`)
   }
