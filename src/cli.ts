@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
@@ -267,44 +267,67 @@ export function main(argv: string[]): number {
           out({ proposals: listProposals(root).map((p) => ({ id: p.id, title: p.frontmatter.title, type: p.frontmatter.type, path: p.path })) }, true)
           return 0
         }
-        const proposalId = args._[2]
-        if (proposalId === undefined) throw new HubError(ErrorCode.E_VALIDATION, `usage: memhub inbox ${sub} <PRO-id>`)
+        // Multiple ids are accepted: `memhub inbox approve PRO-1 PRO-2 ...` —
+        // the human reviews the list first, then commits a batch in one line.
+        // Each id is committed independently; a failure on one never rolls
+        // back the others (per-entry results come back for auditing).
+        const proposalIds = args._.slice(2)
+        if (proposalIds.length === 0) throw new HubError(ErrorCode.E_VALIDATION, `usage: memhub inbox ${sub} <PRO-id> [more-ids...]`)
         if (sub === 'reject') {
-          humanLedger(root, { type: 'proposal.rejected', proposalId, note: args.note, at: new Date().toISOString() })
-          out({ rejected: proposalId })
+          const results = proposalIds.map((pid) => {
+            humanLedger(root, { type: 'proposal.rejected', proposalId: pid, note: args.note, at: new Date().toISOString() })
+            return { rejected: pid }
+          })
+          out(results.length === 1 ? results[0] : { count: results.length, results }, true)
           return 0
         }
         if (sub !== 'approve') throw new HubError(ErrorCode.E_VALIDATION, `unknown inbox subcommand: ${sub}`)
-        // Human-carried channel: the person typed this command.
-        requireApproval('cli-human', {
-          id: proposalId,
-          ledgerAppend: (record) => humanLedger(root, record),
-        })
         const state = createState(root, args.workspace)
         const acquired = acquireLock(root)
         if (!acquired.ok) throw new HubError(ErrorCode.E_READONLY, 'another writer holds the lease', { holder: acquired.holder })
+        const approved: Array<{ knowledgeId: string; version: number; path: string; git: string | null; proposalId: string }> = []
+        const failed: Array<{ proposalId: string; error: string }> = []
         try {
           assertFencing(root, acquired.lock?.token ?? '')
           const proposals = listProposals(root)
-          const proposal = proposals.find((p) => p.id === proposalId)
-          if (proposal === undefined) throw new HubError(ErrorCode.E_NOT_FOUND, `pending proposal not found: ${proposalId}`)
-          const committed = commitKnowledge(
-            root,
-            {
-              type: proposal.frontmatter.type,
-              title: proposal.frontmatter.title,
-              summary: proposal.frontmatter.summary,
-              scope: proposal.frontmatter.scope,
-              tags: proposal.frontmatter.tags,
-              body: readFileSync(proposal.path, 'utf8').split('---')[2]?.trim() ?? '',
-              actor: 'cli-human',
-            },
-            { readSequences, writeSequences, appendLedger: humanLedger },
-          )
-          humanLedger(root, { type: 'proposal.committed', proposalId, knowledgeId: committed.id, channel: 'cli-human', at: new Date().toISOString() })
-          const gitCommit = autoCommit(root, `approve: ${committed.id}@v${committed.version} ${proposal.frontmatter.title}`)
-          out({ knowledgeId: committed.id, version: committed.version, path: committed.path, git: gitCommit }, true)
-          return 0
+          for (const proposalId of proposalIds) {
+            try {
+              // Human-carried channel: the person typed this command.
+              requireApproval('cli-human', {
+                id: proposalId,
+                ledgerAppend: (record) => humanLedger(root, record),
+              })
+              const proposal = proposals.find((p) => p.id === proposalId)
+              if (proposal === undefined) throw new HubError(ErrorCode.E_NOT_FOUND, `pending proposal not found: ${proposalId}`)
+              const committed = commitKnowledge(
+                root,
+                {
+                  type: proposal.frontmatter.type,
+                  title: proposal.frontmatter.title,
+                  summary: proposal.frontmatter.summary,
+                  scope: proposal.frontmatter.scope,
+                  tags: proposal.frontmatter.tags,
+                  body: readFileSync(proposal.path, 'utf8').split('---')[2]?.trim() ?? '',
+                  actor: 'cli-human',
+                },
+                { readSequences, writeSequences, appendLedger: humanLedger },
+              )
+              humanLedger(root, { type: 'proposal.committed', proposalId, knowledgeId: committed.id, channel: 'cli-human', at: new Date().toISOString() })
+              // Keep the inbox honest: a committed proposal must leave the
+              // pending queue (the serve-panel approve path does this too).
+              try {
+                unlinkSync(proposal.path)
+              } catch {
+                // already gone — fine
+              }
+              const gitCommit = autoCommit(root, `approve: ${committed.id}@v${committed.version} ${proposal.frontmatter.title}`)
+              approved.push({ proposalId, knowledgeId: committed.id, version: committed.version, path: committed.path, git: gitCommit.committed ? `committed${gitCommit.detail ? ': ' + gitCommit.detail : ''}` : 'skipped (not a git repo)' })
+            } catch (error) {
+              failed.push({ proposalId, error: error instanceof Error ? error.message : String(error) })
+            }
+          }
+          out(approved.length === 1 && failed.length === 0 ? { ...approved[0] } : { approved: approved.length, failed: failed.length, results: approved, errors: failed }, true)
+          return failed.length === 0 ? 0 : 1
         } finally {
           releaseLock(root, acquired.lock?.token ?? '')
         }
@@ -921,6 +944,9 @@ function printHelp(): void {
   memhub get <ID> [--full]            read one entry
   memhub status                       hub/workspace/lock/metrics snapshot
   memhub inbox list                   list pending proposals
+  memhub inbox approve <id> [ids...]  approve one or several in one line (fast
+                                      review); committed entries leave the queue
+  memhub inbox reject <id> [ids...]   reject without landing [--note text]
   memhub inbox approve <PRO-id>       human approval -> knowledge (ledgered)
   memhub inbox reject <PRO-id>        reject with optional --note
   memhub validate                     extraction validation over knowledge/ + pending/
