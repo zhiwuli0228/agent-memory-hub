@@ -31,9 +31,11 @@ describe('initHub', () => {
     // Derived caches: rebuilt at runtime, committing them only creates merge conflicts.
     expect(gitignore).toContain('index/')
     // Machine-local state, incl. the serve credential — must NEVER be shared.
-    expect(gitignore).toContain('records/.writer.lock')
-    expect(gitignore).toContain('records/server-token')
-    expect(gitignore).toContain('records/server.json')
+    // ADR-0023: records/ is per-hub local state — ignored as a whole (each
+    // hub keeps its own sequences/ledger; federation syncs knowledge/ only).
+    expect(gitignore).toContain('records/')
+    expect(gitignore).toContain('knowledge-private/')
+    expect(gitignore).toContain('hub.yaml')
     // Watermarks stay tracked by default (single-machine migration carries them);
     // team repos may ignore them per the migration guide.
     expect(gitignore).not.toContain('extract-state')

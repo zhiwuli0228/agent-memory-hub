@@ -1022,7 +1022,22 @@ export function syncCommand(root: string, sub: string, remote?: string, message?
     }
   }
   if (sub === 'pull') {
-    const pull = git(root, ['pull', '--rebase'])
+    // ADR-0023 federation: --remote lets a hub pull from ANY repo (a member
+    // pulling the department aggregation, an admin pulling a team repo)
+    // without making it the tracking origin. Explicit refspec — bare `git
+    // pull --rebase` dies when the branch has no upstream (fresh clone).
+    const head = git(root, ['rev-parse', 'HEAD'])
+    const hasCommit = head.ok
+    const branchName = hasCommit ? (git(root, ['rev-parse', '--abbrev-ref', 'HEAD']).output || 'master').trim() : 'master'
+    const pull = remote !== undefined
+      ? (() => {
+          const fetched = git(root, ['fetch', remote, branchName])
+          if (!fetched.ok) return fetched
+          // First pull into an empty clone: adopt the remote snapshot. An
+          // existing history rebases onto it (keeps local-only commits).
+          return hasCommit ? git(root, ['rebase', 'FETCH_HEAD']) : git(root, ['reset', '--hard', 'FETCH_HEAD'])
+        })()
+      : git(root, ['pull', '--rebase'])
     return { ok: pull.ok, output: pull.output }
   }
   return { ok: false, error: `unknown sync subcommand: ${sub}` }

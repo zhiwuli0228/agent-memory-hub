@@ -129,13 +129,18 @@ function hubGitignoreContent(): string {
 # ── 个人私有记忆：按人划分，永不外流 ──
 knowledge-private/
 
+# ── per-hub 本地文件：联邦 git 只共享 knowledge/（各 hub 自持配置/说明）──
+.gitignore
+hub.yaml
+README.md
+
 # ── 派生缓存：运行时自动重建，提交只会制造合并冲突 ──
 index/
 
 # ── 机器本地状态：绝不能进共享历史 ──
-records/.writer.lock
-records/server.json
-records/server-token
+# ADR-0023: records/ 整目录是 per-hub 本地状态（ID 序列、账本、锁、凭据）——
+# 各 hub 独立记账，联邦同步只共享 knowledge/
+records/
 
 # ── 常规系统噪声 ──
 .DS_Store
