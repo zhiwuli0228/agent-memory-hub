@@ -856,9 +856,12 @@ export function installHostCommand(host: HostTarget, root: string, opts: { home?
     action = JSON.stringify(mcp['memory-hub']) === JSON.stringify(entry) ? 'unchanged' : existsSync(configFile) ? 'updated' : 'registered'
     mcp['memory-hub'] = entry
     cfg['mcp'] = mcp
+    // ADR-0024 remote nodes start with no config dir — create it or the
+    // write below fails silently on a fresh opencode install.
+    mkdirSync(dirname(configFile), { recursive: true })
     const backup = writeJsonFile(configFile, cfg)
     nextStep = '重启 opencode 后新会话即可调用 memory_* 工具'
-    return finishInstall({ ok: true, host, configFile, action, envSet: false, hubRoot, backup, nextStep }, opts)
+    return finishInstall({ ok: true, host, configFile, action, envSet: false, hubRoot, backup, nextStep }, { ...opts, team: opts.team })
   }
 
   if (host === 'gemini') {
