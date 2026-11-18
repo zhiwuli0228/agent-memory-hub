@@ -157,7 +157,12 @@ export interface SearchMetrics {
 }
 
 export interface SearchOptions {
-  workspaceId: string
+  /**
+   * Visibility filter. Omit (undefined) to search the WHOLE hub — used by the
+   * central read-side API (ADR-0018), where remote consumers have no workspace
+   * context and the hub is a shared knowledge base by design.
+   */
+  workspaceId?: string
   detail?: DetailLevel
   minScore?: number
   limit?: number
@@ -181,7 +186,7 @@ export function search(index: SearchIndex, query: string, options: SearchOptions
     for (const docId of posting) {
       const doc = index.docs.get(docId)
       if (doc === undefined) continue
-      if (!isVisible(doc.entry.frontmatter.scope, options.workspaceId)) continue
+      if (options.workspaceId !== undefined && !isVisible(doc.entry.frontmatter.scope, options.workspaceId)) continue
       if (options.types !== undefined && !options.types.includes(doc.entry.frontmatter.type)) continue
       const tf = doc.tf.get(term) ?? 0
       const norm = tf * (BM25_K1 + 1) / (tf + BM25_K1 * (1 - BM25_B + BM25_B * (doc.length / avgLength)))

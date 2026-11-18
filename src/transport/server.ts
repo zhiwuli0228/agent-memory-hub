@@ -147,6 +147,25 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
             path: p.path,
           })),
         })
+      case 'GET /api/search': {
+        // ADR-0018 read side: remote consumers (WeKnora-style integrations,
+        // other hosts, CI) search THIS hub in real time — no snapshot pull
+        // required. Open by design; only writes are gated. ?workspace=all
+        // (default) searches the whole shared hub; a concrete workspace id
+        // narrows visibility to that project's scope.
+        const query = String(body?.['q'] ?? body?.['query'] ?? '')
+        if (query === '') return { status: 400, body: { error: 'missing ?q=' } }
+        const detail = (body?.['detail'] === 'L0' || body?.['detail'] === 'L1' || body?.['detail'] === 'L2' ? body['detail'] : 'L1') as 'L0' | 'L1' | 'L2'
+        const limitNum = Number(body?.['limit'])
+        const wsRaw = body?.['workspace']
+        const workspaceId = wsRaw === undefined || wsRaw === 'all' || wsRaw === '' ? undefined : String(wsRaw)
+        const hits = search(state.index, query, {
+          workspaceId,
+          detail,
+          limit: Number.isFinite(limitNum) && limitNum > 0 ? limitNum : undefined,
+        })
+        return ok({ query, workspace: workspaceId ?? 'all', hits })
+      }
       case 'POST /api/propose': {
         // ADR-0012: remote hubs push their approved entries here as proposals —
         // this inbox IS the central review (approve = merge, reject = declined).

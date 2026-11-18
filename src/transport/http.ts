@@ -10,10 +10,36 @@ import { handleApi, type ApiState } from './server.js'
 export interface ServeOptions {
   port?: number
   host?: string
+  /**
+   * ADR-0018 central mode: when set, every WRITE (POST) requires
+   * `Authorization: Bearer <authToken>`; reads (GET) stay open — the
+   * distribution model is "gated on push, open on pull". Local-only
+   * servers (default 127.0.0.1) run without it: zero friction.
+   */
+  authToken?: string
+}
+
+/** Write methods are gated when a token is configured; reads never are. */
+function isWrite(method: string | undefined): boolean {
+  return method === 'POST' || method === 'PUT' || method === 'DELETE'
+}
+
+function bearerMatch(header: string | undefined, authToken: string): boolean {
+  if (header === undefined) return false
+  const m = /^Bearer\s+(.+)$/i.exec(header.trim())
+  return m !== null && m[1] === authToken
 }
 
 export function startServer(state: ApiState, options?: ServeOptions): ReturnType<typeof createServer> {
   const server = createServer((req, res) => {
+    // Central-mode write gate (ADR-0018): pushes are controlled, pulls are
+    // not. Without a token (local-only default) everything stays frictionless.
+    const token = options?.authToken
+    if (token !== undefined && isWrite(req.method) && !bearerMatch(req.headers['authorization'], token)) {
+      res.writeHead(401, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: 'write requires Authorization: Bearer <token> (reads stay open)' }))
+      return
+    }
     void route(state, req, res)
   })
   server.listen(options?.port ?? 7777, options?.host ?? '127.0.0.1')

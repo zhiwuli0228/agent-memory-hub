@@ -44,6 +44,8 @@ interface CliArgs {
   branch?: string
   home?: string
   setEnv?: boolean
+  host?: string
+  token?: string
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -111,6 +113,14 @@ function parseArgs(argv: string[]): CliArgs {
         break
       case '--no-env':
         args.setEnv = false
+        break
+      case '--host':
+        args.host = argv[i + 1]
+        i += 1
+        break
+      case '--token':
+        args.token = argv[i + 1]
+        i += 1
         break
       default:
         args._.push(arg)
@@ -199,13 +209,29 @@ export function main(argv: string[]): number {
         const root = requireHub(args)
         const state = createApiState(root, args.workspace)
         const port = args.port ?? 7777
-        const server = startServer(state, { port })
+        // Central mode (ADR-0018): --host 0.0.0.0 --token <secret> exposes
+        // real-time read-side search to remote consumers (open) while
+        // gating every write behind the token (controlled). Without
+        // --token, writes stay open too — only safe on loopback.
+        const tokenArg = args.token ?? (() => {
+          const tokenFile = join(root, 'records', 'server-token')
+          try {
+            return existsSync(tokenFile) ? readFileSync(tokenFile, 'utf8').trim() || undefined : undefined
+          } catch {
+            return undefined
+          }
+        })()
+        const token = tokenArg !== '' ? tokenArg : undefined
+        const host = args.host
+        const server = startServer(state, { port, ...(host !== undefined ? { host } : {}), ...(token !== undefined ? { authToken: token } : {}) })
         // Port 0 resolves asynchronously — print inside the listening event.
         server.on('listening', () => {
           const url = serverUrl(server)
+          const exposed = host !== undefined && host !== '127.0.0.1' && host !== 'localhost'
           console.error(`memhub console: ${url}  (hub: ${root})`)
+          if (exposed) console.error(token !== undefined ? '中央模式：读取放开（/api/search 实时检索），写入需 Bearer token' : '警告：监听非回环地址但未配置 --token —— 写端点对所有人生效，尽快加 --token')
           console.error('保持此终端窗口开启 —— 关闭终端即停止控制台。按 Ctrl+C 退出。')
-          if (args.open !== false) openInBrowser(url)
+          if (args.open !== false && !exposed) openInBrowser(url)
         })
         server.on('error', (error: NodeJS.ErrnoException) => {
           if (error.code === 'EADDRINUSE') {
