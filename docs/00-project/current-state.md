@@ -2,6 +2,8 @@
 
 ## 当前阶段
 
+**🛠️ memhub install 一键安装 + 自动发版双验证（2026-11-18 08:40，b2c7781）**：用户三问（OpenCode 等怎么装/是不是单中心/默认会不会落 C 盘）→ 产品化。**新命令 `memhub install <claude-code|opencode|gemini|codex> [--root]`**：自动 init hub + 合并注册宿主 MCP 配置（备份 .bak-memhub、幂等 unchanged）+ 写 MEMHUB_ROOT 用户环境变量；root 解析 --root > $MEMHUB_ROOT > ~/mem-hub，绝不落 temp/cwd；codex TOML 打印手贴块。**memory_status 防呆**：hubRoot 落 OS temp 时 notes 大声警告"NOT persistent"。真机完成：opencode + claude-code 指向真实 hub（E:\009workspace\dsh\dsh-plugin-dev），MEMHUB_ROOT 修正，演练残留 ~/mem-hub 清除。**单中心回答**：所有宿主指向同一 hub 目录共享记忆。**C 盘回答**：不配置会落 temp（现已被警告机制暴露），install 后固定持久位置。**自动发版第二次运行验证**：root 0.1.2 发布成功 + host 0.1.3 幂等 skip ✓（流水线两分支都实测）。126 测试全绿。
+
 **🚀 自动发布流水线建成（2026-11-18 00:30，5435edd）**：用户要求插件自动 release 发布 npm。照 dsh-env-manager 先例建 GitHub Actions：**push v* tag → 双包各自 check（121+7 测试闸门）→ 各自发布（package.json 独立版本，npm 已有版本幂等跳过）→ GitHub Release 附双 tarball**。发布走 npm Trusted Publisher (OIDC)——零 token 零 OTP（彻底告别之前 EOTP 烦恼），--provenance 供应链可见。版本 bump：agent-memory-hub 0.1.1、dsh-agent-memory-hub 0.1.3（待流水线首发）。手册 docs/06-operations/release.md。**待用户一次性操作**：npmjs.com 两包 Settings → Publishing access → Trusted Publisher → 绑 zhiwuli0228/agent-memory-hub + release.yml；绑定后打 tag 即首发验证。顺带：live hub 已 git 化推私有仓 memory-hub-data（PRIVATE，236 文件，server-token 等被 .gitignore 挡住三道安全检查通过）。
 
 **🌍 提交 DSH Hub 社区目录收录（2026-11-17 00:20）**：用户在 dshhub.org 找不到插件——机制澄清：DSH Hub（dshhub.org，build by luckySnail）**不是 npm 自动收录**，收录渠道 = 向 github.com/coderPerseus/dsh-hub 提交 Submit-plugin issue（模板仅两栏：仓库链接 + 用途与安装），页面内容从 GitHub 仓库生成。已用 gh CLI（zhiwuli0228）提交 **issue #89**（含 npm 安装 install_bundle dsh-agent-memory-hub、CLI/MCP、分类建议、host/dsh 子目录说明）。待目录维护者审核收录；dshhub 页面安装方式为 github:owner/repo——monorepo 子目录形态需在 description 说明 npm 包名（已做）。
