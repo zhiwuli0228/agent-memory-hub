@@ -124,7 +124,12 @@ function existsSyncSafe(hubRoot: string, id: string): boolean {
 }
 
 /** Route one API request. `body` is the parsed JSON body or undefined. */
-export function handleApi(state: ApiState, method: string, path: string, body?: Record<string, unknown>): ApiResponse {
+export interface AuthContext {
+  role: 'admin' | 'domain'
+  domainId?: string
+}
+
+export function handleApi(state: ApiState, method: string, path: string, body?: Record<string, unknown>, auth?: AuthContext): ApiResponse {
   try {
     switch (`${method} ${path}`) {
       case 'GET /api/status':
@@ -135,18 +140,28 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
           metrics: state.metrics,
           acceptedCount: listEntries(state.hubRoot).length,
         })
-      case 'GET /api/inbox':
-        return ok({
-          proposals: listProposals(state.hubRoot).map((p) => ({
-            id: p.id,
-            type: p.frontmatter.type,
-            title: p.frontmatter.title,
-            summary: p.frontmatter.summary,
-            tags: p.frontmatter.tags,
-            grade: gradeFor(p.frontmatter.type),
-            path: p.path,
-          })),
-        })
+      case 'GET /api/inbox': {
+        // ADR-0021: large-team triage — group by domain so each domain's
+        // reviewer sees their slice; ?domain= narrows to one slice.
+        const domainFilter = body?.['domain']
+        const proposals = listProposals(state.hubRoot).map((p) => ({
+          id: p.id,
+          type: p.frontmatter.type,
+          title: p.frontmatter.title,
+          summary: p.frontmatter.summary,
+          tags: p.frontmatter.tags,
+          domain: p.frontmatter.scope.level === 'domain' ? p.frontmatter.scope.domainId : null,
+          grade: gradeFor(p.frontmatter.type),
+          path: p.path,
+        }))
+        const filtered = typeof domainFilter === 'string' && domainFilter !== '' ? proposals.filter((p) => p.domain === domainFilter) : proposals
+        const groups: Record<string, number> = {}
+        for (const p of proposals) {
+          const key = p.domain ?? '(no-domain)'
+          groups[key] = (groups[key] ?? 0) + 1
+        }
+        return ok({ proposals: filtered, groups, total: proposals.length })
+      }
       case 'GET /api/search': {
         // ADR-0018 read side: remote consumers (WeKnora-style integrations,
         // other hosts, CI) search THIS hub in real time — no snapshot pull
@@ -185,6 +200,17 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
         // ADR-0019: the pushed entry's scope travels with it (team domains
         // especially). Validate the shape; fall back to the receiving hub's
         // project scope when absent/invalid.
+        // ADR-0021: a domain token IS the pusher's team identity. The token
+        // binds the proposal to that domain — explicit cross-domain pushes
+        // are rejected, unset domains are stamped with the token's domain.
+        // The admin key may push anywhere.
+        if (auth?.role === 'domain') {
+          const raw = body?.['scope'] as { level?: string; domainId?: string } | undefined
+          if (raw?.level === 'domain' && raw.domainId !== auth.domainId) {
+            return bad(403, `token is bound to domain ${auth.domainId} — cannot push into ${String(raw.domainId)}`)
+          }
+          if (raw?.level !== 'domain') body!['scope'] = { level: 'domain', domainId: auth.domainId }
+        }
         const rawScope = body?.['scope'] as { level?: string; domainId?: string; workspaceId?: string } | undefined
         if (rawScope?.level === 'private') {
           // ADR-0020: private entries never leave their hub — reject, not rewrite.

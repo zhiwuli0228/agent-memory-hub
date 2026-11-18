@@ -47,6 +47,7 @@ interface CliArgs {
   host?: string
   token?: string
   team?: string
+  domainTokens?: string
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -125,6 +126,10 @@ function parseArgs(argv: string[]): CliArgs {
         break
       case '--team':
         args.team = argv[i + 1]
+        i += 1
+        break
+      case '--domain-tokens':
+        args.domainTokens = argv[i + 1]
         i += 1
         break
       default:
@@ -228,7 +233,11 @@ export function main(argv: string[]): number {
         })()
         const token = tokenArg !== '' ? tokenArg : undefined
         const host = args.host
-        const server = startServer(state, { port, ...(host !== undefined ? { host } : {}), ...(token !== undefined ? { authToken: token } : {}) })
+        // ADR-0021: per-domain write credentials, `domainId=token,domainId2=token2`.
+        const domainTokens: Record<string, string> | undefined = args.domainTokens !== undefined
+          ? Object.fromEntries(args.domainTokens.split(',').map((kv) => kv.split('=') as [string, string]).filter((kv) => kv.length === 2 && kv[0] !== '' && kv[1] !== ''))
+          : undefined
+        const server = startServer(state, { port, ...(host !== undefined ? { host } : {}), ...(token !== undefined ? { authToken: token } : {}), ...(domainTokens !== undefined && Object.keys(domainTokens).length > 0 ? { domainTokens } : {}) })
         // Port 0 resolves asynchronously — print inside the listening event.
         server.on('listening', () => {
           const url = serverUrl(server)
@@ -298,7 +307,12 @@ export function main(argv: string[]): number {
         const root = requireHub(args)
         const sub = args._[1] ?? 'list'
         if (sub === 'list') {
-          out({ proposals: listProposals(root).map((p) => ({ id: p.id, title: p.frontmatter.title, type: p.frontmatter.type, path: p.path })) }, true)
+          // ADR-0021: large-team triage — reviewers filter their own domain.
+          const domainFilter = args.team
+          const proposals = listProposals(root)
+            .map((p) => ({ id: p.id, title: p.frontmatter.title, type: p.frontmatter.type, domain: p.frontmatter.scope.level === 'domain' ? p.frontmatter.scope.domainId : null, path: p.path }))
+            .filter((p) => domainFilter === undefined || p.domain === domainFilter)
+          out({ proposals, domain: domainFilter ?? null }, true)
           return 0
         }
         // Multiple ids are accepted: `memhub inbox approve PRO-1 PRO-2 ...` —

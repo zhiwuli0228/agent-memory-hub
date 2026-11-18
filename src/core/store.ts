@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { atomicWrite } from './atomic.js'
 import { ErrorCode, HubError } from './errors.js'
@@ -133,12 +133,69 @@ export function listEntries(root: string, options?: { includeSoftRemoved?: boole
   return out
 }
 
-/** Title-level conflict detection: same title among accepted entries. */
+/**
+ * Title → id cache for O(1) conflict checks (ADR-0021: a 150-person org
+ * writes thousands of entries; re-scanning the whole hub per commit is O(n²)).
+ * Invalidated by any knowledge/ subdirectory mtime change (file adds/removes
+ * change their parent type dir's mtime).
+ */
+const titleCache = new Map<string, { stamp: string; titles: Map<string, string> }>()
+
+function titleMap(root: string): Map<string, string> {
+  const typesRoot = join(root, 'knowledge')
+  let stamp = ''
+  if (existsSync(typesRoot)) {
+    for (const t of readdirSync(typesRoot)) {
+      const dir = join(typesRoot, t)
+      stamp += `${t}:${Math.floor(statSync(dir).mtimeMs)};`
+    }
+  }
+  const hit = titleCache.get(root)
+  if (hit !== undefined && hit.stamp === stamp) return hit.titles
+  const titles = new Map<string, string>()
+  if (existsSync(typesRoot)) {
+    for (const type of readdirSync(typesRoot)) {
+      for (const file of readdirSync(join(typesRoot, type))) {
+        if (!file.endsWith('.md')) continue
+        try {
+          const parsed = parseKnowledgeFile(readFileSync(join(typesRoot, type, file), 'utf8'))
+          if (parsed.frontmatter.extra['soft_removed'] === true) continue
+          titles.set(parsed.frontmatter.title, parsed.frontmatter.id)
+        } catch {
+          // Unreadable entry: skip (same policy as listEntries).
+        }
+      }
+    }
+  }
+  titleCache.set(root, { stamp, titles })
+  return titles
+}
+
+/**
+ * In-process incremental update after OUR OWN commit: the directory mtime we
+ * caused must not invalidate the cache (that would restore O(n²)). Registering
+ * the new title and re-stamping keeps the cache warm in O(1). Cross-process
+ * writes still invalidate via the stamp on next read.
+ */
+function cacheAddTitle(root: string, title: string, id: string): void {
+  const hit = titleCache.get(root)
+  if (hit === undefined) return // no cache yet — next read builds it fresh
+  const typesRoot = join(root, 'knowledge')
+  let stamp = ''
+  if (existsSync(typesRoot)) {
+    for (const t of readdirSync(typesRoot)) {
+      stamp += `${t}:${Math.floor(statSync(join(typesRoot, t)).mtimeMs)};`
+    }
+  }
+  hit.titles.set(title, id)
+  hit.stamp = stamp
+}
+
+/** Title-level conflict detection: same title among accepted entries. O(1) via cache. */
 export function findTitleConflict(root: string, title: string, excludeId?: string): KnowledgeEntry | null {
-  const hit = listEntries(root).find(
-    (entry) => entry.frontmatter.title === title && entry.frontmatter.id !== excludeId,
-  )
-  return hit ?? null
+  const id = titleMap(root).get(title)
+  if (id === undefined || id === excludeId) return null
+  return getEntry(root, id)
 }
 
 /**
@@ -191,6 +248,7 @@ export function commitKnowledge(
       version: 1,
       source_refs: input.sourceRefs,
     })
+    cacheAddTitle(root, input.title, id)
     return { id, version: 1, path }
   }
   // Explicit id: ADR-0012 cross-hub upsert. When the id does not exist

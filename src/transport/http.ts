@@ -17,6 +17,13 @@ export interface ServeOptions {
    * servers (default 127.0.0.1) run without it: zero friction.
    */
   authToken?: string
+  /**
+   * ADR-0021 large-team mode: per-domain write credentials. Each domain
+   * token authorizes pushes INTO that domain (and only that one); the
+   * global authToken is the admin key. The matched token is forwarded to
+   * handlers via the x-memhub-token header for fine-grained checks.
+   */
+  domainTokens?: Record<string, string>
 }
 
 /** Write methods are gated when a token is configured; reads never are. */
@@ -24,23 +31,36 @@ function isWrite(method: string | undefined): boolean {
   return method === 'POST' || method === 'PUT' || method === 'DELETE'
 }
 
-function bearerMatch(header: string | undefined, authToken: string): boolean {
-  if (header === undefined) return false
+function bearerToken(header: string | undefined): string | null {
+  if (header === undefined) return null
   const m = /^Bearer\s+(.+)$/i.exec(header.trim())
-  return m !== null && m[1] === authToken
+  return m !== null && m[1] !== undefined && m[1] !== '' ? m[1] : null
 }
 
 export function startServer(state: ApiState, options?: ServeOptions): ReturnType<typeof createServer> {
+  const domainValues = options?.domainTokens !== undefined ? Object.values(options.domainTokens) : []
   const server = createServer((req, res) => {
-    // Central-mode write gate (ADR-0018): pushes are controlled, pulls are
-    // not. Without a token (local-only default) everything stays frictionless.
+    // Central-mode write gate (ADR-0018/0021): pushes are controlled, pulls
+    // are not. The write gate accepts the admin token OR any valid domain
+    // token; the matched value travels downstream for domain-level checks.
     const token = options?.authToken
-    if (token !== undefined && isWrite(req.method) && !bearerMatch(req.headers['authorization'], token)) {
+    if (token !== undefined && isWrite(req.method) && !bearerToken(req.headers['authorization'])) {
       res.writeHead(401, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: 'write requires Authorization: Bearer <token> (reads stay open)' }))
       return
     }
-    void route(state, req, res)
+    const presented = bearerToken(req.headers['authorization'])
+    const known = token !== undefined && presented === token
+      ? 'admin'
+      : presented !== null && domainValues.includes(presented)
+        ? 'domain'
+        : null
+    if (token !== undefined && isWrite(req.method) && known === null) {
+      res.writeHead(401, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: 'unknown write credential (admin or domain token required)' }))
+      return
+    }
+    void route(state, req, res, options)
   })
   server.listen(options?.port ?? 7777, options?.host ?? '127.0.0.1')
   return server
@@ -55,7 +75,7 @@ export function serverUrl(server: ReturnType<typeof createServer>): string {
   return 'http://127.0.0.1/'
 }
 
-async function route(state: ApiState, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function route(state: ApiState, req: IncomingMessage, res: ServerResponse, options?: ServeOptions): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
   const path = url.pathname
   // CORS: the panel is consumed cross-origin (DSH web page on its own port
@@ -92,7 +112,16 @@ async function route(state: ApiState, req: IncomingMessage, res: ServerResponse)
         }
       }
     }
-    const response = handleApi(state, req.method ?? 'GET', path, body)
+    // Resolve the presented credential into an auth role for fine-grained
+    // handlers (ADR-0021): admin key, a bound domain, or none.
+    const presented = bearerToken(req.headers['authorization'])
+    const adminToken = options?.authToken
+    const auth = adminToken !== undefined && presented === adminToken
+      ? { role: 'admin' as const, domainId: undefined }
+      : presented !== null && options?.domainTokens !== undefined && Object.entries(options.domainTokens).find(([, v]) => v === presented) !== undefined
+        ? { role: 'domain' as const, domainId: Object.entries(options.domainTokens).find(([, v]) => v === presented)?.[0] }
+        : undefined
+    const response = handleApi(state, req.method ?? 'GET', path, body, auth)
     res.writeHead(response.status, { 'content-type': 'application/json' })
     res.end(JSON.stringify(response.body))
     return
