@@ -149,16 +149,11 @@ export function listEntries(root: string, options?: { includeSoftRemoved?: boole
 const titleCache = new Map<string, { stamp: string; titles: Map<string, string> }>()
 
 function titleMap(root: string): Map<string, string> {
-  const bases = [join(root, 'knowledge'), join(root, 'knowledge-private')].filter((b) => existsSync(b))
-  let stamp = ''
-  for (const base of bases) {
-    for (const t of readdirSync(base)) {
-      stamp += `${base}:${Math.floor(statSync(join(base, t)).mtimeMs)};`
-    }
-  }
+  const stamp = cacheStamp(root)
   const hit = titleCache.get(root)
   if (hit !== undefined && hit.stamp === stamp) return hit.titles
   const titles = new Map<string, string>()
+  const bases = [join(root, 'knowledge'), join(root, 'knowledge-private')].filter((b) => existsSync(b))
   for (const base of bases) {
     for (const type of readdirSync(base)) {
       for (const file of readdirSync(join(base, type))) {
@@ -183,18 +178,23 @@ function titleMap(root: string): Map<string, string> {
  * the new title and re-stamping keeps the cache warm in O(1). Cross-process
  * writes still invalidate via the stamp on next read.
  */
+/** Shared stamp format for titleCache — MUST be identical in writer & reader. */
+function cacheStamp(root: string): string {
+  const bases = [join(root, 'knowledge'), join(root, 'knowledge-private')].filter((b) => existsSync(b))
+  let stamp = ''
+  for (const base of bases) {
+    for (const t of readdirSync(base)) {
+      stamp += `${base}:${Math.floor(statSync(join(base, t)).mtimeMs)};`
+    }
+  }
+  return stamp
+}
+
 function cacheAddTitle(root: string, title: string, id: string): void {
   const hit = titleCache.get(root)
   if (hit === undefined) return // no cache yet — next read builds it fresh
-  const typesRoot = join(root, 'knowledge')
-  let stamp = ''
-  if (existsSync(typesRoot)) {
-    for (const t of readdirSync(typesRoot)) {
-      stamp += `${t}:${Math.floor(statSync(join(typesRoot, t)).mtimeMs)};`
-    }
-  }
   hit.titles.set(title, id)
-  hit.stamp = stamp
+  hit.stamp = cacheStamp(root) // admit the mtime change we ourselves caused
 }
 
 /** Title-level conflict detection: same title among accepted entries. O(1) via cache. */
