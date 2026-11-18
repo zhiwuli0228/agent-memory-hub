@@ -47,6 +47,8 @@ interface CliArgs {
   host?: string
   token?: string
   team?: string
+  teamRepo?: string
+  deptRepo?: string
   domainTokens?: string
 }
 
@@ -126,6 +128,14 @@ function parseArgs(argv: string[]): CliArgs {
         break
       case '--team':
         args.team = argv[i + 1]
+        i += 1
+        break
+      case '--team-repo':
+        args.teamRepo = argv[i + 1]
+        i += 1
+        break
+      case '--dept-repo':
+        args.deptRepo = argv[i + 1]
         i += 1
         break
       case '--domain-tokens':
@@ -456,6 +466,17 @@ export function main(argv: string[]): number {
         const sub = args._[1]
         if (sub === undefined) throw new HubError(ErrorCode.E_VALIDATION, 'usage: memhub sync <status|init|push|pull> [--remote url] [--message text]')
         const result = syncCommand(root, sub, args.remote, args.message, args.branch)
+        out(result, args.json)
+        return result.ok ? 0 : 1
+      }
+      case 'team': {
+        // ADR-0023 team scaffolding: the admin hub aggregates team -> dept.
+        // The admin starts from nothing — auto-create the hub (idempotent).
+        initHub(args.root ?? process.cwd())
+        const root = requireHub(args)
+        const sub = args._[1]
+        if (sub === undefined) throw new HubError(ErrorCode.E_VALIDATION, 'usage: memhub team <init|aggregate> [--team-repo url] [--dept-repo url]')
+        const result = teamCommand(root, sub, args.teamRepo, args.deptRepo)
         out(result, args.json)
         return result.ok ? 0 : 1
       }
@@ -1041,6 +1062,54 @@ export function syncCommand(root: string, sub: string, remote?: string, message?
     return { ok: pull.ok, output: pull.output }
   }
   return { ok: false, error: `unknown sync subcommand: ${sub}` }
+}
+
+/** ADR-0023 team scaffolding: one admin hub aggregates team repo -> dept repo. */
+export function teamCommand(root: string, sub: string, teamRepo?: string, deptRepo?: string): { ok: boolean; [key: string]: unknown } {
+  if (sub === 'aggregate') {
+    // Department aggregation: pull the team repo, commit, push to the dept
+    // repo — ONE command a cron/scheduled task runs daily. Topology comes
+    // from hub.yaml (written by `team init`): team-remote / dept-remote.
+    const config = readHubConfig(root)
+    const teamRemote = config['team-remote']
+    const deptRemote = config['dept-remote']
+    if (teamRemote === undefined || deptRemote === undefined) {
+      return { ok: false, error: 'team-remote / dept-remote not configured — run: memhub team init --team-repo <url> --dept-repo <url>' }
+    }
+    // The aggregation hub needs its own git working tree (idempotent) with
+    // origin pointed at the department repo; team pulls come via --remote.
+    syncCommand(root, 'init', deptRemote)
+    const pulled = syncCommand(root, 'pull', teamRemote)
+    if (!pulled.ok) return { ok: false, stage: 'pull', error: pulled.output ?? pulled.error }
+    const pushed = syncCommand(root, 'push', undefined, 'department aggregation (scheduled)')
+    return { ok: pushed.ok, stage: 'push', ...(pushed.ok ? {} : { error: pushed.output ?? pushed.error }) }
+  }
+  if (sub === 'init') {
+    // Team admin bootstrap: create the team repo when it is a local bare path,
+    // wire this hub as the aggregation node, print member onboarding.
+    if (teamRepo === undefined || deptRepo === undefined) {
+      return { ok: false, error: 'usage: memhub team init --team-repo <url|path> --dept-repo <url|path>' }
+    }
+    if (teamRepo.endsWith('.git') && !existsSync(teamRepo)) {
+      const bare = git(root, ['init', '--bare', teamRepo])
+      if (!bare.ok) return { ok: false, error: bare.output }
+    }
+    if (deptRepo.endsWith('.git') && !existsSync(deptRepo)) {
+      const bare = git(root, ['init', '--bare', deptRepo])
+      if (!bare.ok) return { ok: false, error: bare.output }
+    }
+    const configPath = join(root, 'hub.yaml')
+    const existing = existsSync(configPath) ? readFileSync(configPath, 'utf8').replace(/team-remote:.*\n?/g, '').replace(/dept-remote:.*\n?/g, '').trimEnd() + '\n' : ''
+    atomicWrite(configPath, `${existing}team-remote: ${teamRepo}\ndept-remote: ${deptRepo}\n`)
+    return {
+      ok: true,
+      teamRepo,
+      deptRepo,
+      nextStep: 'memhub team aggregate  (挂到调度器每日运行)',
+      memberOnboarding: `memhub sync init --root <成员hub> --remote ${teamRepo}`,
+    }
+  }
+  return { ok: false, error: `unknown team subcommand: ${sub}` }
 }
 
 function printHelp(): void {
