@@ -45,6 +45,7 @@
     "knowledge-base"
   ],
   "devDependencies": {
+    "@types/node": "^22.20.5",
     "agent-memory-hub": "file:../..",
     "esbuild": "^0.25.0",
     "typescript": "^5.8.0",
@@ -58,7 +59,9 @@
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": ["@deepseek-ai/dsh-client-ui-conversation"]
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
     }
   },
   "dshhub": {
