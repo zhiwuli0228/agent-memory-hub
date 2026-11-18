@@ -65,9 +65,9 @@ window.__ModuleLoader__.load({
         color: 'inherit', font: 'inherit', textAlign: 'center',
       } },
         h('div', { style: { fontSize: 34 } }, PanelIcon()),
-        h('div', { style: { fontSize: 16, fontWeight: 600 } }, status === 'probing' ? '正在连接记忆中枢…' : '记忆中枢控制台未启动'),
+        h('div', { style: { fontSize: 16, fontWeight: 600 } }, status === 'probing' ? '正在连接记忆中枢…' : '本地控制台尚未就绪'),
         h('div', { style: { fontSize: 13, opacity: 0.75, lineHeight: 1.7, maxWidth: 460 } },
-          '侧边栏面板内嵌 memhub serve 控制台（收件箱审核 / 知识浏览 / 审计）。在任意终端运行下面的命令启动后，这里会自动点亮（每 5 秒重试）：'),
+          'DSH 宿主会自动启动本地控制台（127.0.0.1:7777），重启 DSH 或稍等片刻即可；也可以在任意终端手动运行下面的命令立即启动。每 5 秒自动重试：'),
         h('code', { style: {
           padding: '8px 14px', borderRadius: 8, fontSize: 13,
           background: 'rgba(127,127,127,0.14)', userSelect: 'all',

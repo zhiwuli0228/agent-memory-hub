@@ -109,3 +109,8 @@ export {
 export type { ExtractionMaterial, ExtractLedgerEvent } from './core/extract.js'
 export { validateHub } from './core/validate.js'
 export type { ValidationReport, ValidationIssue } from './core/validate.js'
+
+// Panel HTTP surface (ADR-0012: one audited local API for CLI + browser +
+// embedded DSH sidebar panel). Host adapters embed these directly.
+export { startServer, serverUrl, type ServeOptions } from './transport/http.js'
+export { createApiState, gradeFor, type ApiState, type ApprovalGrade } from './transport/server.js'
