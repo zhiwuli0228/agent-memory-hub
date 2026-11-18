@@ -6,38 +6,40 @@
 >
 > 核心事实：**hub 目录（`knowledge/` + `history/` + `pending/` + `records/`）就是全部数据**——文件即权威，拷走它 = 完整迁移，无黑盒数据库。
 
-## 1. 一次性安装（5 分钟）
-
-### 1.1 CLI / MCP server（所有宿主的底座）
+## 1. 一次性安装（5 分钟，一条命令一个宿主）
 
 ```sh
 npm i -g agent-memory-hub
-memhub --version          # 确认安装成功
 ```
 
-### 1.2 初始化本地 hub
+### 1.1 一键安装：`memhub install <host>`
+
+自动完成三件事：**初始化 hub（若不存在）→ 把 MCP server 注册进宿主配置文件（合并不覆盖其余内容，写前备份 .bak-memhub）→ 把 hub 位置写入用户环境变量 MEMHUB_ROOT**（Windows setx，新终端生效）：
 
 ```sh
-# 方式一：环境变量固定 hub 位置（推荐，多宿主共用）
-# Windows (PowerShell):
-[Environment]::SetEnvironmentVariable('MEMHUB_ROOT', 'C:\mem\my-hub', 'User')
-mkdir C:\mem\my-hub
-memhub init C:\mem\my-hub
-
-# 方式二：不设环境变量，hub 跟随会话工作目录（每项目一个 hub）
-mkdir .\mem-hub
-memhub init .\mem-hub
+memhub install opencode     --root D:\mem\my-hub
+memhub install claude-code  --root D:\mem\my-hub
+memhub install gemini       --root D:\mem\my-hub
+memhub install codex        # codex 是 TOML，打印需手工粘贴的配置块
 ```
 
-### 1.3 按宿主接入
+- root 解析顺序：显式 `--root` > `$MEMHUB_ROOT` > `~/mem-hub`——**绝不会落到系统临时目录**（那种位置的记忆重启即失）
+- 幂等：重复执行同样的命令 `action: unchanged`，零副作用
+- 不带 `--root` 的默认是用户主目录下的 `mem-hub`（持久），想放其他盘就显式 `--root`
+
+### 1.2 不用 install 的手工路径（等价）
 
 | 宿主 | 接入方式 |
 | --- | --- |
-| **DSH** | `install_bundle dsh-agent-memory-hub`；固定 hub 位置则在 profile patch 加 override：`- id: agent-memory-hub-dsh` / `config: { root: 'C:\mem\my-hub' }` |
-| **Claude Code** | `claude mcp add memory-hub -- node <npm全局路径>/agent-memory-hub/dist/cli.js mcp --root C:\mem\my-hub`（或直接编辑 `~/.claude.json` 的 mcpServers） |
-| **OpenCode** | `~/.config/opencode/opencode.json` 的 `mcp` 段：`{ "memory-hub": { "type": "local", "command": ["node", "<cli.js 路径>", "mcp", "--root", "C:\\mem\\my-hub"] } }` |
+| **DSH** | `install_bundle dsh-agent-memory-hub`；固定 hub 位置则在 profile patch 加 override：`- id: agent-memory-hub-dsh` / `config: { root: 'D:\mem\my-hub' }` |
+| **Claude Code** | `claude mcp add memory-hub -- node <npm全局路径>/agent-memory-hub/dist/cli.js mcp --root D:\mem\my-hub`（或直接编辑 `~/.claude.json` 的 mcpServers） |
+| **OpenCode** | `~/.config/opencode/opencode.json` 的 `mcp` 段：`{ "memory-hub": { "type": "local", "enabled": true, "command": ["node", "<cli.js 路径>", "mcp", "--root", "D:\\mem\\my-hub"] } }` |
 | **其他 MCP 宿主** | 通用命令：`memhub mcp --root <hub>`，stdio JSON-RPC，11 个工具 |
 | **不支持 MCP 的环境** | 纯 CLI 兜底：`memhub search/get/propose/inbox` 全流程可用 |
+
+### 1.3 防呆设计
+
+如果某个宿主会话在没有配置 hub 位置的情况下运行，`memory_status` 的 freshness.notes 会显式警告 "hubRoot is inside the OS temp dir — memories here are NOT persistent" 并给出修复命令——**记忆悄悄落进临时目录**会被 agent 主动看见，而不是无声丢失。
 
 ## 2. 记忆迁移（三选一）
 

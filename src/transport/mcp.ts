@@ -1,4 +1,5 @@
-import { appendFileSync, readFileSync, unlinkSync } from 'node:fs'
+import { appendFileSync, readFileSync, realpathSync, unlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ErrorCode, HubError } from '../core/errors.js'
 import { isHubInitialized, readHubConfig } from '../core/hub.js'
@@ -415,6 +416,16 @@ function readFreshness(hubRoot: string): Record<string, unknown> {
   const stale: string[] = []
   if (lastPullAt === '') stale.push('pull: never synced from the remote — team knowledge may be missing locally')
   if (lastPublishedAt === '') stale.push('publish: never published — local approvals are not on the remote yet')
+  // A synthetic hub lives in the OS temp dir: fine for a smoke test, fatal for
+  // real memory (gone on reboot). Say it loudly so the agent can warn the user.
+  try {
+    const tmp = realpathSync(tmpdir())
+    if (hubRoot.toLowerCase().startsWith(tmp.toLowerCase())) {
+      stale.push('hubRoot is inside the OS temp dir — memories here are NOT persistent. Run `memhub install <host> --root <persistent-dir>` or set $MEMHUB_ROOT')
+    }
+  } catch {
+    // tmpdir resolution failure is harmless here
+  }
   return { lastPullAt, lastPublishedAt, lastExtractAt, ...(stale.length > 0 ? { notes: stale } : {}) }
 }
 

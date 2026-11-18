@@ -1,6 +1,7 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
-import { join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { ErrorCode, HubError } from './core/errors.js'
 import { atomicWrite } from './core/atomic.js'
@@ -40,6 +41,8 @@ interface CliArgs {
   message?: string
   since?: string
   branch?: string
+  home?: string
+  setEnv?: boolean
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -101,6 +104,13 @@ function parseArgs(argv: string[]): CliArgs {
         args.branch = argv[i + 1]
         i += 1
         break
+      case '--home':
+        args.home = argv[i + 1]
+        i += 1
+        break
+      case '--no-env':
+        args.setEnv = false
+        break
       default:
         args._.push(arg)
     }
@@ -161,6 +171,22 @@ export function main(argv: string[]): number {
         const result = initHub(root)
         out({ root, ...result })
         return 0
+      }
+      case 'install': {
+        const host = args._[1] as HostTarget | undefined
+        if (host === undefined || !(host in HOST_TARGETS)) {
+          out({ ok: false, error: `unknown host "${host ?? ''}"`, supported: Object.keys(HOST_TARGETS), usage: 'memhub install <claude-code|opencode|gemini|codex> [--root <hub>] [--home <dir>] [--no-env]' })
+          return 1
+        }
+        // Install-time root resolution: explicit --root > $MEMHUB_ROOT >
+        // ~/mem-hub. NEVER the session cwd or the OS temp dir — those are
+        // where unconfigured sessions degrade, and they are not persistent
+        // locations for a memory hub.
+        const explicitRoot = process.argv.includes('--root') ? args.root : undefined
+        const root = resolve(explicitRoot ?? process.env['MEMHUB_ROOT'] ?? join(homedir(), 'mem-hub'))
+        const result = installHostCommand(host, root, { home: args.home, setEnv: args.setEnv })
+        out(result)
+        return result.ok ? 0 : 1
       }
       case 'mcp': {
         const root = requireHub(args)
@@ -601,6 +627,134 @@ const publishHttpTransport: PublishTransport = async (url, init) => {
   return { ok: r.ok, status: r.status, body: (await r.text().catch(() => '')).slice(0, 400) }
 }
 
+/** Exported for tests: one-command host registration (`memhub install <host>`). */
+export const HOST_TARGETS = {
+  'claude-code': 'claude-code',
+  opencode: 'opencode',
+  gemini: 'gemini',
+  codex: 'codex',
+} as const
+
+export type HostTarget = keyof typeof HOST_TARGETS
+
+interface InstallOutcome {
+  ok: boolean
+  host: HostTarget
+  configFile: string
+  action: 'registered' | 'updated' | 'unchanged'
+  envSet: boolean
+  hubRoot: string
+  backup?: string
+  nextStep: string
+}
+
+/** Resolve the absolute path of the installed CLI entry (this running file). */
+function cliEntryPath(): string {
+  const argv1 = process.argv[1] ?? ''
+  return isAbsolute(argv1) ? argv1 : resolve(argv1)
+}
+
+function jsonWithCommentStrip(raw: string): string {
+  // Claude Code config commonly carries // comments; strip line comments before JSON.parse.
+  return raw.replace(/^\s*\/\/.*$/gm, '')
+}
+
+function readJsonFile(file: string): Record<string, unknown> {
+  if (!existsSync(file)) return {}
+  return JSON.parse(jsonWithCommentStrip(readFileSync(file, 'utf8'))) as Record<string, unknown>
+}
+
+function writeJsonFile(file: string, value: Record<string, unknown>): string {
+  const backup = `${file}.bak-memhub`
+  if (existsSync(file)) copyFileSync(file, backup)
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  return backup
+}
+
+/**
+ * Register `memhub mcp` into a host's MCP config — the "install once, no
+ * manual editing" path for OpenCode / Claude Code / gemini-cli. Codex uses
+ * TOML, which we do not rewrite programmatically; the outcome points the
+ * human at the exact block to paste.
+ */
+export function installHostCommand(host: HostTarget, root: string, opts: { home?: string; setEnv?: boolean } = {}): InstallOutcome {
+  const home = opts.home ?? homedir()
+  const hubRoot = resolve(root)
+  initHub(hubRoot)
+  const cliPath = cliEntryPath()
+  const mcpArgs = ['mcp', '--root', hubRoot]
+  let configFile: string
+  let action: InstallOutcome['action'] = 'registered'
+  let nextStep = ''
+
+  if (host === 'claude-code') {
+    configFile = join(home, '.claude.json')
+    const cfg = readJsonFile(configFile)
+    const servers = (cfg['mcpServers'] as Record<string, unknown> | undefined) ?? {}
+    const entry = { type: 'stdio', command: 'node', args: [cliPath, ...mcpArgs] }
+    action = JSON.stringify(servers['memory-hub']) === JSON.stringify(entry) ? 'unchanged' : existsSync(configFile) ? 'updated' : 'registered'
+    servers['memory-hub'] = entry
+    cfg['mcpServers'] = servers
+    const backup = writeJsonFile(configFile, cfg)
+    nextStep = '重启 Claude Code 后 `claude mcp list` 应显示 memory-hub ✓ Connected'
+    return finishInstall({ ok: true, host, configFile, action, envSet: false, hubRoot, backup, nextStep }, opts)
+  }
+
+  if (host === 'opencode') {
+    configFile = join(home, '.config', 'opencode', 'opencode.json')
+    const cfg = readJsonFile(configFile)
+    const mcp = (cfg['mcp'] as Record<string, unknown> | undefined) ?? {}
+    const entry = { type: 'local', enabled: true, command: ['node', cliPath, ...mcpArgs] }
+    action = JSON.stringify(mcp['memory-hub']) === JSON.stringify(entry) ? 'unchanged' : existsSync(configFile) ? 'updated' : 'registered'
+    mcp['memory-hub'] = entry
+    cfg['mcp'] = mcp
+    const backup = writeJsonFile(configFile, cfg)
+    nextStep = '重启 opencode 后新会话即可调用 memory_* 工具'
+    return finishInstall({ ok: true, host, configFile, action, envSet: false, hubRoot, backup, nextStep }, opts)
+  }
+
+  if (host === 'gemini') {
+    configFile = join(home, '.gemini', 'settings.json')
+    const cfg = readJsonFile(configFile)
+    const servers = (cfg['mcpServers'] as Record<string, unknown> | undefined) ?? {}
+    const entry = { command: 'node', args: [cliPath, ...mcpArgs] }
+    action = JSON.stringify(servers['memory-hub']) === JSON.stringify(entry) ? 'unchanged' : existsSync(configFile) ? 'updated' : 'registered'
+    servers['memory-hub'] = entry
+    cfg['mcpServers'] = servers
+    const backup = writeJsonFile(configFile, cfg)
+    nextStep = '重启 gemini-cli 后新会话即可调用 memory_* 工具'
+    return finishInstall({ ok: true, host, configFile, action, envSet: false, hubRoot, backup, nextStep }, opts)
+  }
+
+  // codex: TOML — no dependency, no rewrite; print the exact block instead.
+  configFile = join(home, '.codex', 'config.toml')
+  return {
+    ok: true,
+    host,
+    configFile,
+    action: 'unchanged',
+    envSet: false,
+    hubRoot,
+    nextStep: `codex 用 TOML 配置（本工具不改写 TOML）。请把以下段落手工加入 ${configFile} 的 [mcp_servers.memory-hub]：\ncommand = "node"\nargs = ["${cliPath}", ${mcpArgs.map((a) => `"${a}"`).join(', ')}]`,
+  }
+}
+
+function finishInstall(outcome: InstallOutcome, opts: { setEnv?: boolean }): InstallOutcome {
+  // Persist the hub location for every future shell/host: without it a host
+  // without its own root config would fall back to a throwaway temp dir.
+  if (opts.setEnv !== false && process.platform === 'win32') {
+    try {
+      spawnSync('setx', ['MEMHUB_ROOT', outcome.hubRoot], { encoding: 'utf8' })
+      outcome.envSet = true
+      outcome.nextStep += '；MEMHUB_ROOT 已写入用户环境变量（新开的终端生效）'
+    } catch {
+      outcome.nextStep += '；MEMHUB_ROOT 未能自动写入，请手动设置该用户环境变量'
+    }
+  }
+  return outcome
+}
+
 /** Exported for tests: ADR-0015 publish with a definable outbound API. */
 export async function publishCommand(
   root: string,
@@ -753,6 +907,11 @@ function printHelp(): void {
   console.log(`memhub — agent-memory-hub CLI
 
   memhub init --root <dir>            initialize a hub directory
+  memhub install <host> [--root <dir>] [--home <dir>] [--no-env]
+                                      register the MCP server into a host's
+                                      config (claude-code | opencode | gemini |
+                                      codex); auto-creates the hub, backs up the
+                                      host config, sets MEMHUB_ROOT (win)
   memhub mcp --root <dir>             start the MCP stdio server
   memhub serve --root <dir> [--port n] [--no-open]
                                       start the web console (auto-opens your browser;
