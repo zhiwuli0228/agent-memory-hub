@@ -108,7 +108,9 @@ function parseScope(lines: string[], start: number): { scope: KnowledgeScope; ne
   }
   const level = entries.get('level')
   let scope: KnowledgeScope = { level: 'global' }
-  if (level === 'domain' && entries.get('domainId')) {
+  if (level === 'private') {
+    scope = { level: 'private' }
+  } else if (level === 'domain' && entries.get('domainId')) {
     scope = { level: 'domain', domainId: entries.get('domainId') as string }
   } else if (level === 'project' && entries.get('workspaceId')) {
     scope = { level: 'project', workspaceId: entries.get('workspaceId') as string }

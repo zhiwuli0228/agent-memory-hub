@@ -386,7 +386,7 @@ export function main(argv: string[]): number {
         // main() is synchronous; hubSync is async — stash the promise so the
         // entry guard can await it (main never blocks an in-process server).
         pendingHubSync = (async () => {
-          const result = await hubSync(root, sub, central.replace(/\/$/, ''), args.since)
+          const result = await hubSync(root, sub, central.replace(/\/$/, ''), args.since, undefined, args.token)
           out(result, args.json)
           return result.ok ? 0 : 1
         })()
@@ -514,16 +514,26 @@ const PULL_STATE_FILE = 'hub-pull-state.json'
 interface HubFetchResult { ok: boolean; status: number; body: Record<string, unknown> }
 
 /** Injectable for tests; production hits the central hub over HTTP. */
-export type HubFetch = (url: string, init?: { method?: string; body?: string }) => Promise<HubFetchResult>
+export type HubFetch = (url: string, init?: { method?: string; body?: string; headers?: Record<string, string> }) => Promise<HubFetchResult>
 
 const hubFetchHttp: HubFetch = async (url, init) => {
   const r = await fetch(url, {
     method: init?.method,
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
     body: init?.body,
     signal: AbortSignal.timeout(20000),
   })
   return { ok: r.ok, status: r.status, body: (await r.json().catch(() => ({}))) as Record<string, unknown> }
+}
+
+/**
+ * Wrap a HubFetch so every call carries the central hub's write credential
+ * (ADR-0018: gated push). Token comes from --token or hub.yaml's
+ * publish.header.Authorization line.
+ */
+function withCentralAuth(fetchImpl: HubFetch, token: string | undefined): HubFetch {
+  if (token === undefined || token === '') return fetchImpl
+  return async (url, init) => fetchImpl(url, { ...init, headers: { ...(init?.headers ?? {}), authorization: `Bearer ${token}` } })
 }
 
 /** Exported for tests: hub-to-hub sync roundtrip (ADR-0012). */
@@ -533,17 +543,26 @@ export async function hubSync(
   central: string,
   since?: string,
   fetchImpl: HubFetch = hubFetchHttp,
+  token?: string,
 ): Promise<{ ok: boolean; [key: string]: unknown }> {
+  const authFetch = withCentralAuth(fetchImpl, token)
   if (sub === 'push') {
     const state = readJsonState<PushState>(root, PUSH_STATE_FILE, { lastPushedAt: '' })
     const effectiveSince = since ?? state.lastPushedAt
     const all = listEntries(root, { includeSoftRemoved: false })
     const entries = effectiveSince === '' ? all : all.filter((e) => (e.frontmatter.updated ?? '') > effectiveSince)
-    if (entries.length === 0) return { ok: true, pushed: 0, note: 'nothing new since last push' }
+    // ADR-0020: private entries never leave their hub — the local owner's
+    // decision to keep something private is enforced at the transport layer.
+    const shareable = entries.filter((e) => e.frontmatter.scope.level !== 'private')
+    const privateCount = entries.length - shareable.length
+    if (shareable.length === 0) {
+      return { ok: true, pushed: 0, privateSkipped: privateCount, note: 'nothing shareable new since last push' }
+    }
+    const entries2 = shareable
     const results: Array<{ localId: string; ok: boolean; proposalId?: string; error?: string }> = []
-    for (const e of entries) {
+    for (const e of entries2) {
       try {
-        const r = await fetchImpl(`${central}/api/propose`, {
+        const r = await authFetch(`${central}/api/propose`, {
           method: 'POST',
           body: JSON.stringify({
             type: e.frontmatter.type,
@@ -565,7 +584,7 @@ export async function hubSync(
     }
     const pushed = results.filter((r) => r.ok).length
     if (pushed === entries.length) writeJsonState(root, PUSH_STATE_FILE, { lastPushedAt: new Date().toISOString() })
-    return { ok: pushed > 0, pushed, total: entries.length, results, nextStep: 'central inbox review: approve = merge into the central knowledge base' }
+    return { ok: pushed > 0, pushed, total: entries2.length, privateSkipped: privateCount, results, nextStep: 'central inbox review: approve = merge into the central knowledge base' }
   }
   if (sub === 'pull') {
     const state = readJsonState<PullState>(root, PULL_STATE_FILE, { lastPulledAt: '' })
@@ -576,7 +595,7 @@ export async function hubSync(
     // central hub).
     let listResult: { ok: boolean; status: number; body: Record<string, unknown> }
     try {
-      listResult = await fetchImpl(`${central}/api/entries${q}`, { method: 'GET' })
+      listResult = await authFetch(`${central}/api/entries${q}`, { method: 'GET' })
     } catch (error) {
       return { ok: false, error: `central hub unreachable: ${error instanceof Error ? error.message : String(error)}` }
     }
@@ -590,7 +609,7 @@ export async function hubSync(
       try {
         let detail: { ok: boolean; status: number; body: Record<string, unknown> }
         try {
-          detail = await fetchImpl(`${central}/api/entries/${encodeURIComponent(listedEntry.id)}`, { method: 'GET' })
+          detail = await authFetch(`${central}/api/entries/${encodeURIComponent(listedEntry.id)}`, { method: 'GET' })
         } catch (error) {
           errors.push(`${listedEntry.id}: detail fetch failed (${error instanceof Error ? error.message : String(error)})`)
           continue

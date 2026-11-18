@@ -186,6 +186,10 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
         // especially). Validate the shape; fall back to the receiving hub's
         // project scope when absent/invalid.
         const rawScope = body?.['scope'] as { level?: string; domainId?: string; workspaceId?: string } | undefined
+        if (rawScope?.level === 'private') {
+          // ADR-0020: private entries never leave their hub — reject, not rewrite.
+          return bad(400, 'private entries never leave their hub (keep them local or change the scope)')
+        }
         let scope: KnowledgeScope = { level: 'project', workspaceId: state.workspace.workspaceId }
         if (rawScope?.level === 'global') scope = { level: 'global' }
         else if (rawScope?.level === 'domain' && typeof rawScope.domainId === 'string' && rawScope.domainId !== '') scope = { level: 'domain', domainId: rawScope.domainId }

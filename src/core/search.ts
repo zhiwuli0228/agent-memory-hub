@@ -124,8 +124,11 @@ export interface ScopeViewer {
   teamId?: string
 }
 
-/** Union visibility: global ∪ declared team ∪ declared project. */
+/** Union visibility: global ∪ declared team ∪ declared project ∪ local private. */
 export function isVisibleIn(scope: KnowledgeScope, viewer: ScopeViewer): boolean {
+  // Private entries only exist in their owner's hub (push filters them out,
+  // central propose rejects them) — whoever's index holds one IS the owner.
+  if (scope.level === 'private') return true
   if (scope.level === 'global') return true
   if (scope.level === 'domain') return viewer.teamId !== undefined && scope.domainId === viewer.teamId
   if (scope.level === 'project') return viewer.workspaceId !== undefined && scope.workspaceId === viewer.workspaceId

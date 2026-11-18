@@ -27,11 +27,12 @@ export type KnowledgeStatus =
   | 'superseded'
   | 'deprecated'
 
-/** Scope levels: project < domain < global. A project entry belongs to exactly one workspace. */
+/** Scope levels: private (local-only) < project < domain < global. A project entry belongs to exactly one workspace. */
 export type KnowledgeScope =
   | { level: 'global' }
   | { level: 'domain'; domainId: string }
   | { level: 'project'; workspaceId: string }
+  | { level: 'private' }
 
 /**
  * Parsed frontmatter of a knowledge file. Unknown keys are preserved verbatim

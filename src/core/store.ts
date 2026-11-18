@@ -64,6 +64,9 @@ export function renderKnowledgeMarkdown(fm: KnowledgeFrontmatter, body: string):
     lines.push('scope:')
     lines.push('  level: domain')
     lines.push(`  domainId: ${fm.scope.domainId}`)
+  } else if (fm.scope.level === 'private') {
+    lines.push('scope:')
+    lines.push('  level: private')
   } else {
     lines.push('scope:')
     lines.push('  level: project')
