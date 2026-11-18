@@ -32,6 +32,17 @@ export function serverUrl(server: ReturnType<typeof createServer>): string {
 async function route(state: ApiState, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
   const path = url.pathname
+  // CORS: the panel is consumed cross-origin (DSH web page on its own port
+  // fetching 127.0.0.1:7777). The server binds loopback only and holds no
+  // credentials, so a permissive header is the local-tool tradeoff.
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'content-type')
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204)
+    res.end()
+    return
+  }
   if (req.method === 'GET' && (path === '/' || path === '/panel')) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     res.end(PANEL_HTML)
