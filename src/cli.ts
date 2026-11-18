@@ -590,7 +590,12 @@ export async function hubSync(
             origin: `hub-push:${root.replace(/\\/g, '/').split('/').pop() ?? 'local'}`,
           }),
         })
-        const body = r.body as { proposalId?: string; error?: string }
+        const body = r.body as { proposalId?: string; error?: string; duplicate?: boolean }
+        if (body.duplicate === true) {
+          // ADR-0022: the central intake merged our twin — record as merged, not an error.
+          results.push({ localId: e.frontmatter.id, ok: true, proposalId: body.proposalId, error: `duplicate of central ${body.proposalId ?? 'entry'} (merged at intake)` })
+          continue
+        }
         results.push({ localId: e.frontmatter.id, ok: r.ok, ...(body.proposalId !== undefined ? { proposalId: body.proposalId } : {}), ...(body.error !== undefined ? { error: body.error } : {}) })
       } catch (error) {
         results.push({ localId: e.frontmatter.id, ok: false, error: error instanceof Error ? error.message : String(error) })

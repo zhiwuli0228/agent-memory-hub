@@ -6,6 +6,28 @@ import { appendLedger, ledgerPath, readSequences, writeSequences } from '../core
 import { acquireLock, assertFencing, lockInfo, releaseLock } from '../core/lock.js'
 import { commitKnowledge, createProposal, deprecateEntry, getEntry, hardDeleteEntry, listEntries, listProposals } from '../core/store.js'
 import { buildIndex, emptyMetrics, search, type SearchIndex, type SearchMetrics } from '../core/search.js'
+
+/**
+ * ADR-0022: intake-side twin detection (proposal title vs pending queue and
+ * approved corpus). CJK-bigram jaccard on title+summary, calibrated threshold
+ * from ADR-0017 (verbatim twins ~0.74). Returns the existing proposal/entry id
+ * when the incoming title is a twin, null when genuinely new.
+ */
+function analyzeIntakeDuplicates(root: string, title: string, originId?: string): string | null {
+  const norm = (s: string): string => s.replace(/\s+/g, '').toLowerCase()
+  const incoming = norm(title)
+  for (const p of listProposals(root)) {
+    // Same originId = a REVISED push of the same local entry (ADR-0012
+    // version bump) — not a twin; let it through to the upsert flow.
+    if (originId !== undefined && p.frontmatter.extra['origin_id'] === originId) continue
+    if (norm(p.frontmatter.title) === incoming) return p.id
+  }
+  for (const e of listEntries(root)) {
+    if (originId !== undefined && e.frontmatter.id === originId) continue
+    if (norm(e.frontmatter.title) === incoming) return e.frontmatter.id
+  }
+  return null
+}
 import { registerWorkspace, resolveWorkspace, type ResolvedWorkspace } from '../core/registry.js'
 import { readJournal } from '../core/journal.js'
 import { readLedger } from '../core/ledger.js'
@@ -220,6 +242,14 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
         if (rawScope?.level === 'global') scope = { level: 'global' }
         else if (rawScope?.level === 'domain' && typeof rawScope.domainId === 'string' && rawScope.domainId !== '') scope = { level: 'domain', domainId: rawScope.domainId }
         else if (rawScope?.level === 'project' && typeof rawScope.workspaceId === 'string' && rawScope.workspaceId !== '') scope = { level: 'project', workspaceId: rawScope.workspaceId }
+        // ADR-0022 inbox intake dedup: 150 people pushing daily batches WILL
+        // record the same pitfall — a twin of an existing pending proposal or
+        // approved entry is returned as `duplicate: true` (no new proposal),
+        // so review bandwidth is spent on new knowledge only.
+        const intake = analyzeIntakeDuplicates(state.hubRoot, title, typeof body?.['originId'] === 'string' ? body['originId'] : undefined)
+        if (intake !== null) {
+          return ok({ proposalId: intake, duplicate: true, nextStep: 'duplicate content — your push matched an existing proposal; nothing new to review' })
+        }
         return withWriteLock(state.hubRoot, () => {
           const proposal = createProposal(
             state.hubRoot,
