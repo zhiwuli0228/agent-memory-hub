@@ -1,37 +1,41 @@
-# ADR-0024: 中心 git 仓库设计（GitHub 私有仓形态）
+# ADR-0024: 中心 git 仓库设计（修订 2：单仓决策）
 
-日期：2026-11-19　状态：accepted
+日期：2026-11-19　状态：accepted（修订 1 的双仓方案作废）
 
-## 关键重设计：服务器不再是"中心"，GitHub 才是
+## 用户决策（原文）
 
-腾讯云服务器（43.138.213.197）**降格为联邦中的一个普通节点**（跑 opencode +
-自己的 hub），**git 权威上移到 GitHub 私有仓**：
+> 用一套 git 仓库实现团队和部门的知识管理、萃取；个人的直接上传云服务或本地。
 
-- **零 git 服务运维**（服务器不跑 Gitea/裸仓，零备份负担——GitHub 即异地）
-- 服务器节点与本地节点**完全对等**（同一套 sync push/pull，同一个私钥体系）
-- 本地优先红线不受影响：各节点离线完整可用，GitHub 只在 push/pull 时刻出现
+## 架构
 
-## 仓库命名与权限（150 人扩展路径）
+```
+个人层（每人本地 hub；knowledge-private/ 物理隔离；可选个人云 git 备份）
+    ↓ sync push（共享条目：domain + global，单目标）
+中心 git 仓（唯一一套：团队与部门共用，如 memory-hub-frontend）
+    ↓ pull（各节点各自 pull 到本地索引）
+萃取与治理：curate / 审批 / 老化在中心仓层面统一进行
+```
 
-| 仓库 | 内容 | 权限 |
-|---|---|---|
-| `memory-hub-<team>`（如 memory-hub-frontend） | 该团队共享记忆 | 团队成员协作者 / deploy key |
-| `memory-hub-dept` | 各团队聚合（部门级检索） | 部门管理员 + 聚合节点 deploy key |
+## 分级的真实保证（单仓形态下）
 
-- 试点期：`main` 直推（信任 + 事后 curate 治理，ADR-0013 语义）
-- 推送身份：**per-node deploy key**（每个节点一把，只授权它该读写的仓）
-- private 条目物理隔离（ADR-0023 `knowledge-private/`）在任何仓中零出现
+1. **private 物理隔离**：`knowledge-private/` gitignore，构造性不出仓（已验证）。
+2. **仓级权限**：GitHub 私有仓协作者边界——未授权者连 clone 都不可得。
+3. **scope 逻辑分级**：`domain:team-X` 条目只对声明该团队的调用方检索可见
+   （ADR-0019 调用方声明 + MEMHUB_TEAM）；`global` 条目对全体可见 = 部门通用层。
 
-## 节点清单（首批）
+**诚实边界**：单仓下 git 文件本体对全体协作者开放——分级靠检索层过滤而非
+git 层。试点期（单团队）无影响；部门推广后跨团队文件可见属已知取舍，
+换取的是零聚合运维与简单性（与 ADR-0019"劝阻物理分库"同源）。
 
-| 节点 | 角色 | hub 位置 |
-|---|---|---|
-| 本地 Windows | 开发主节点 | E:\tmp\amh-e2e\hub（试点）→ 正式化后迁移 |
-| tencent 43.138.213.197 | 远程 opencode 节点 | ~/memory-hub |
-| GitHub | git 权威（私有仓群） | — |
+## 作废与保留
 
-## 验证协议（跨机联邦）
+- 修订 1 的 `memory-hub-<team>` / `memory-hub-dept` 双仓 + `team aggregate`
+  聚合链：**作废**（dept 仓保留不删但闲置；`team aggregate` 命令保留，
+  供未来若重新需要部门级聚合时复用）。
+- 服务器节点 = 对等节点不变；deploy key per node 不变。
+- 命名：试点直接复用现有仓；推广期统一命名为 `memory-hub`。
 
-本地 opencode 写记忆 → push GitHub 团队仓 → 服务器 aggregate →
-远程 opencode `search` 命中本地写的条目；反向（远程写 → 本地检索）同链路。
-双宿主（opencode + claude-code）各自注册同一 MEMHUB_ROOT（试点同机共享）。
+## 验证基线（2026-11-19）
+
+双向联邦实测通过：本地写→GitHub→服务器检索命中；服务器写→GitHub→
+本地检索命中。防撞（ID floor + pull-before-push）已上线（v0.1.26）。
