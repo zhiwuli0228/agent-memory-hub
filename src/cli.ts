@@ -1032,7 +1032,8 @@ export function syncCommand(root: string, sub: string, remote?: string, message?
     // pre-init hubs skip the discipline harmlessly).
     const hasOrigin = git(root, ['remote', 'get-url', 'origin']).ok
     if (branch === undefined && git(root, ['remote', 'get-url', 'origin']).ok) {
-      const prePull = remote !== undefined ? syncCommand(root, 'pull', remote) : syncCommand(root, 'pull')
+      // Default to the configured origin when no --remote was passed.
+      const prePull = syncCommand(root, 'pull', remote ?? 'origin')
       if (!prePull.ok) return { ok: false, stage: 'pre-pull', error: prePull.output ?? prePull.error }
     }
     if (branch !== undefined) {
@@ -1069,9 +1070,12 @@ export function syncCommand(root: string, sub: string, remote?: string, message?
     const pull = remote !== undefined
       ? (() => {
           const fetched = git(root, ['fetch', remote, branchName])
-          if (!fetched.ok) return fetched
-          // First pull into an empty clone: adopt the remote snapshot. An
-          // existing history rebases onto it (keeps local-only commits).
+          if (!fetched.ok) {
+            // ADR-0024: a freshly created remote repo has no ref yet — that
+            // is an EMPTY remote, not an error. First push seeds it.
+            if (fetched.output.includes("couldn't find remote ref")) return { ok: true, output: '(empty remote — nothing to pull)' }
+            return fetched
+          }
           return hasCommit ? git(root, ['rebase', 'FETCH_HEAD']) : git(root, ['reset', '--hard', 'FETCH_HEAD'])
         })()
       : git(root, ['pull', '--rebase'])

@@ -133,6 +133,7 @@ knowledge-private/
 .gitignore
 hub.yaml
 README.md
+MEMORY-HUB.md
 
 # ── 派生缓存：运行时自动重建，提交只会制造合并冲突 ──
 index/
