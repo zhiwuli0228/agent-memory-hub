@@ -233,7 +233,9 @@ export function commitKnowledge(
         })
       }
     }
-    const id = nextKnowledgeId(root, input.type, helpers.readSequences, helpers.writeSequences)
+    // ADR-0023: floor the sequence at the max id already visible locally so
+    // pulled peer entries can never be overwritten by a re-minted local id.
+    const id = nextKnowledgeId(root, input.type, helpers.readSequences, helpers.writeSequences, titleMap(root).values())
     const fm: KnowledgeFrontmatter = {
       id,
       version: 1,
@@ -388,7 +390,9 @@ export function createProposal(
   },
 ): { id: string; path: string } {
   const ts = helpers.nowIsoValue ?? nowIso()
-  const proposalId = nextProposalId(root, helpers.readSequences, helpers.writeSequences)
+  // Same collision guard as knowledge ids: pending proposals pulled or
+  // created earlier locally must never be re-minted.
+  const proposalId = nextProposalId(root, helpers.readSequences, helpers.writeSequences, listProposals(root).map((p) => p.id))
   const fm: KnowledgeFrontmatter = {
     id: proposalId,
     version: 1,
