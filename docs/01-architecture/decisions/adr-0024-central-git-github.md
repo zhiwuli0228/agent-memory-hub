@@ -1,41 +1,35 @@
-# ADR-0024: 中心 git 仓库设计（修订 2：单仓决策）
+# ADR-0024: 中心 git 仓库设计（修订 3：仓内分层布局）
 
-日期：2026-11-19　状态：accepted（修订 1 的双仓方案作废）
+日期：2026-11-19　状态：accepted
 
-## 用户决策（原文）
+## 用户决策（演进）
 
-> 用一套 git 仓库实现团队和部门的知识管理、萃取；个人的直接上传云服务或本地。
-
-## 架构
+- 修订 2：一套 git 仓承载团队与部门的知识管理与萃取；个人层本地或云备份。
+- 修订 3（现行）：**这套仓内的知识本身要分层**——分别管理部门和小组：
 
 ```
-个人层（每人本地 hub；knowledge-private/ 物理隔离；可选个人云 git 备份）
-    ↓ sync push（共享条目：domain + global，单目标）
-中心 git 仓（唯一一套：团队与部门共用，如 memory-hub-frontend）
-    ↓ pull（各节点各自 pull 到本地索引）
-萃取与治理：curate / 审批 / 老化在中心仓层面统一进行
+knowledge/
+├── department/<type>/<ID>.md              ← 部门层（global 条目）
+├── groups/<domainId>/<type>/<ID>.md       ← 小组层（domain 条目，按小组分目录）
+└── projects/<workspaceId>/<type>/<ID>.md  ← 项目层（project 条目）
+knowledge-private/<type>/<ID>.md           ← 个人层（gitignore，物理不出仓）
 ```
 
-## 分级的真实保证（单仓形态下）
+**本地 hub 与中心仓是同一棵树**：clone 中心仓即见分层；无同步期重映射。
+frontmatter 的 scope 是权威，路径是它的投影；读取递归兼容旧平铺布局。
 
-1. **private 物理隔离**：`knowledge-private/` gitignore，构造性不出仓（已验证）。
-2. **仓级权限**：GitHub 私有仓协作者边界——未授权者连 clone 都不可得。
-3. **scope 逻辑分级**：`domain:team-X` 条目只对声明该团队的调用方检索可见
-   （ADR-0019 调用方声明 + MEMHUB_TEAM）；`global` 条目对全体可见 = 部门通用层。
+## 分级的三道保证
 
-**诚实边界**：单仓下 git 文件本体对全体协作者开放——分级靠检索层过滤而非
-git 层。试点期（单团队）无影响；部门推广后跨团队文件可见属已知取舍，
-换取的是零聚合运维与简单性（与 ADR-0019"劝阻物理分库"同源）。
+1. 个人层物理隔离（knowledge-private/ gitignore，git 树验证零出现）。
+2. 仓级权限（GitHub 私有仓协作者边界）。
+3. 层级即结构：department/ 与 groups/<小组>/ 目录一眼可辨，检索仍按
+   scope + 调用方声明过滤（ADR-0019）。
 
-## 作废与保留
+## 工程细节
 
-- 修订 1 的 `memory-hub-<team>` / `memory-hub-dept` 双仓 + `team aggregate`
-  聚合链：**作废**（dept 仓保留不删但闲置；`team aggregate` 命令保留，
-  供未来若重新需要部门级聚合时复用）。
-- 服务器节点 = 对等节点不变；deploy key per node 不变。
-- 命名：试点直接复用现有仓；推广期统一命名为 `memory-hub`。
-
-## 验证基线（2026-11-19）
-
-双向联邦实测通过：本地写→GitHub→服务器检索命中；服务器写→GitHub→
-本地检索命中。防撞（ID floor + pull-before-push）已上线（v0.1.26）。
+- titleCache stamp = depth≤3 目录 mtime；sync pull 后显式 bump 目录
+  mtime（pull 只改文件 mtime，跨进程缓存否则陈旧）。
+- 防撞（ID floor + pull-before-push）在分层布局下实测：服务器 pull
+  基线后 mint 得 PRC-000002，双条目跨节点互检命中。
+- 旧平铺文件清理：git rm 顶层 type 目录（pre-pull 的 reset 会把远端
+  旧文件带回工作区，属预期合并语义，清理一次即可）。
