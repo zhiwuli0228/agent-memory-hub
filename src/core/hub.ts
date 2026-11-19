@@ -130,9 +130,9 @@ function hubGitignoreContent(): string {
 knowledge-private/
 
 # ── per-hub 本地文件：联邦 git 只共享 knowledge/（各 hub 自持配置/说明）──
+# README.md NOT ignored: the central repo carries a tracked design README.
 .gitignore
 hub.yaml
-README.md
 MEMORY-HUB.md
 
 # ── 派生缓存：运行时自动重建，提交只会制造合并冲突 ──
