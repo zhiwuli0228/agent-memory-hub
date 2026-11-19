@@ -1,6 +1,6 @@
 {
   "name": "agent-memory-hub",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "description": "Agent memory bridge — local-first, human-approved, file-native long-term memory for AI coding agents (Claude Code, Codex, opencode, gemini, DSH). One local service, every agent shares it.",
   "keywords": [
     "agent-memory",
@@ -30,12 +30,13 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "memhub": "./dist/cli.js"
+    "memhub": "./bin/memhub.js"
   },
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "bin"
   ],
   "exports": {
     ".": {
