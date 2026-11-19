@@ -1031,7 +1031,7 @@ export function syncCommand(root: string, sub: string, remote?: string, message?
     // Only when the hub actually has an origin (bare repos in tests /
     // pre-init hubs skip the discipline harmlessly).
     const hasOrigin = git(root, ['remote', 'get-url', 'origin']).ok
-    if (hasOrigin) {
+    if (branch === undefined && git(root, ['remote', 'get-url', 'origin']).ok) {
       const prePull = remote !== undefined ? syncCommand(root, 'pull', remote) : syncCommand(root, 'pull')
       if (!prePull.ok) return { ok: false, stage: 'pre-pull', error: prePull.output ?? prePull.error }
     }
