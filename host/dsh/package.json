@@ -1,6 +1,6 @@
 {
   "name": "dsh-agent-memory-hub",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "description": "Memory hub for DeepSeek Harness (DSH): human-approved long-term memory with local-first search, proposal/Approval workflow, citations and journaling. Thin host adapter — all logic lives in agent-memory-hub core; also ships as a standalone MCP server / CLI for OpenCode, Claude Code and any MCP host.",
   "license": "MIT",
   "main": "./dist/index.js",

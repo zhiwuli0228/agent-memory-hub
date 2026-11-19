@@ -1028,8 +1028,13 @@ export function syncCommand(root: string, sub: string, remote?: string, message?
     // (and the ID floor) sees peer entries — otherwise two nodes mint the
     // same ID and a later rebase silently overwrites a peer. Conflicts
     // surface as an explicit failure, never a silent overwrite.
-    const prePull = remote !== undefined ? syncCommand(root, 'pull', remote) : syncCommand(root, 'pull')
-    if (!prePull.ok) return { ok: false, stage: 'pre-pull', error: prePull.output ?? prePull.error }
+    // Only when the hub actually has an origin (bare repos in tests /
+    // pre-init hubs skip the discipline harmlessly).
+    const hasOrigin = git(root, ['remote', 'get-url', 'origin']).ok
+    if (hasOrigin) {
+      const prePull = remote !== undefined ? syncCommand(root, 'pull', remote) : syncCommand(root, 'pull')
+      if (!prePull.ok) return { ok: false, stage: 'pre-pull', error: prePull.output ?? prePull.error }
+    }
     if (branch !== undefined) {
       const hasBranch = git(root, ['rev-parse', '--verify', branch])
       const switchTo = hasBranch.ok ? git(root, ['checkout', branch]) : git(root, ['checkout', '-b', branch])
