@@ -34,22 +34,26 @@ window.__ModuleLoader__.load({
     }
 
     function Panel() {
+      // 'probing' only ever shows on first mount: probe() itself never
+      // rewinds the status, so a healthy server keeps the iframe mounted
+      // (the old version setStatus('probing') on every probe AND rebuilt
+      // the interval from the [status] dependency — the iframe remounted
+      // forever, which is the "panel never opens / keeps flashing" bug).
       const [status, setStatus] = React.useState('probing')
-
-      const probe = React.useCallback(() => {
-        setStatus('probing')
-        fetch(`${SERVE_BASE}/api/inbox`, { cache: 'no-store', signal: AbortSignal.timeout(2500) })
-          .then((r) => { if (r.ok) setStatus('online'); else setStatus('offline') })
-          .catch(() => setStatus('offline'))
-      }, [])
+      const tickRef = React.useRef(() => {})
 
       React.useEffect(() => {
-        probe()
-        if (status === 'offline') {
-          const timer = setInterval(probe, 5000)
-          return () => clearInterval(timer)
+        let alive = true
+        const tick = () => {
+          fetch(`${SERVE_BASE}/api/inbox`, { cache: 'no-store', signal: AbortSignal.timeout(2500) })
+            .then((r) => { if (alive) setStatus(r.ok ? 'online' : 'offline') })
+            .catch(() => { if (alive) setStatus('offline') })
         }
-      }, [status, probe])
+        tickRef.current = tick
+        tick()
+        const timer = setInterval(tick, 5000)
+        return () => { alive = false; clearInterval(timer) }
+      }, [])
 
       if (status === 'online') {
         return h('iframe', {
@@ -73,7 +77,8 @@ window.__ModuleLoader__.load({
           background: 'rgba(127,127,127,0.14)', userSelect: 'all',
         } }, 'memhub serve --root <你的hub目录>'),
         h('button', {
-          onClick: probe, disabled: status === 'probing',
+          onClick: () => { setStatus('probing'); tickRef.current() },
+          disabled: status === 'probing',
           style: {
             marginTop: 6, padding: '7px 18px', borderRadius: 8, border: 'none',
             cursor: status === 'probing' ? 'default' : 'pointer', font: 'inherit', fontSize: 13,
