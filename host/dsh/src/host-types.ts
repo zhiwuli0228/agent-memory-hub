@@ -33,6 +33,19 @@ export interface HostContext {
     get(name: string): ToolDefinition | undefined
     register(tool: ToolDefinition): () => void
   }
+  /**
+   * systemPrompt service (declared via `inject`). context() registers a
+   * dynamic tail message; DSH materializes it as a user-role tail and only
+   * re-appends when the rendered text changes. Missing in bare hosts —
+   * registration is wrapped in try/catch at the call site.
+   */
+  systemPrompt?: {
+    context(options: {
+      name: string
+      order?: number
+      text(context: { agent?: { session?: { header?: { cwd?: string } } } }): string
+    }): () => void
+  }
   logger?: {
     info(message: string): void
     warn(message: string): void

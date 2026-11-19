@@ -16,7 +16,7 @@ import { createTools, createHubContext } from './tools.js'
  */
 
 export const name = 'agent-memory-hub-dsh'
-export const inject = ['tools']
+export const inject = ['tools', 'systemPrompt']
 
 const PANEL_PORT = 7777
 
@@ -97,6 +97,56 @@ export function apply(ctx: HostContext, config?: AdapterConfig): void {
     disposers.push(ctx.tools.register(tool))
   }
   ctx.logger?.info(`agent-memory-hub-dsh: ${disposers.length} memory tools registered (hub: ${root})`)
+
+  // ── Session lifecycle hooks (restores the predecessor's capability) ──
+  // 老版本记忆管理（dsh-memory-evolve 时代）有两个主动钩子，v0.1.2x 的纯
+  // 工具化重构把它们丢了，这里恢复：
+  //  1) 会话开始前查询：systemPrompt 尾消息注入本轮记忆快照（L0 hits +
+  //     行为引导），DSH 只在文本变化时重新附加，缓存友好；
+  //  2) 结束后提交：同一注入内带结束引导——模型在收尾时调 memory_close_task
+  //     / memory_propose 写回（老版本同款机制：引导语驱动，不做后台魔法写）。
+  if (ctx.systemPrompt !== undefined) {
+    let lastText = ''
+    let lastAt = 0
+    const disposersSystem = () => {
+      try {
+        const dispose = ctx.systemPrompt?.context({
+          name: 'agent-memory-hub:snapshot',
+          order: 90,
+          text: (context) => {
+            // Throttle: BM25 over a large hub is cheap but not free, and
+            // this runs on every render; 30s TTL keeps it negligible.
+            const now = Date.now()
+            if (now - lastAt < 30_000 && lastText !== '') return lastText
+            lastAt = now
+            const cwd = context.agent?.session?.header?.cwd
+            const intent = cwd !== undefined ? `项目上下文 ${cwd.split(/[\\/]/).pop() ?? cwd}` : '当前工作上下文'
+            try {
+              const pack = hub.preflight(hubCtx.index, hubCtx.root, hubCtx.workspace.workspaceId, intent, {
+                teamId: process.env['MEMHUB_TEAM'],
+              })
+              const hits = pack.hits ?? []
+              const lines = hits.map((hit: { id: string; title: string; abstract?: string }) => `- ${hit.id} ${hit.title}${hit.abstract ? `：${hit.abstract}` : ''}`)
+              lastText = lines.length === 0
+                ? '（记忆中枢：本意图暂无命中。会话收尾时若有可沉淀知识，用 memory_propose 提交、memory_close_task 关闭任务。）'
+                : `【记忆中枢快照 · 意图：${intent}】开始工作前可参考：\n${lines.join('\n')}\n（详情用 memory_get；会话收尾时用 memory_propose 提交新知识、memory_close_task 关闭任务。）`
+            } catch (error) {
+              lastText = ''
+              ctx.logger?.warn(`agent-memory-hub-dsh: preflight snapshot failed: ${error instanceof Error ? error.message : String(error)}`)
+            }
+            return lastText
+          },
+        })
+        if (typeof dispose === 'function') {
+          ctx.effect?.(() => dispose, `${name}-snapshot`)
+        }
+        ctx.logger?.info('agent-memory-hub-dsh: session snapshot hook registered (start-query + end-commit guidance)')
+      } catch (error) {
+        ctx.logger?.warn(`agent-memory-hub-dsh: systemPrompt hook unavailable: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    disposersSystem()
+  }
   ctx.effect?.(() => () => {
     for (const dispose of disposers) dispose()
   }, name)

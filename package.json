@@ -1,6 +1,6 @@
 {
   "name": "agent-memory-hub",
-  "version": "0.1.28",
+  "version": "0.1.29",
   "description": "Agent memory bridge — local-first, human-approved, file-native long-term memory for AI coding agents (Claude Code, Codex, opencode, gemini, DSH). One local service, every agent shares it.",
   "keywords": [
     "agent-memory",
