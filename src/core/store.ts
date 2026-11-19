@@ -45,8 +45,40 @@ export interface KnowledgeEntry {
   softRemoved: boolean
 }
 
-function entryPath(root: string, type: KnowledgeType, id: string): string {
-  return join(knowledgeDir(root, type), `${id}.md`)
+/**
+ * ADR-0024 rev 3: knowledge inside the ONE repo is TIERED by scope —
+ * `knowledge/department/` (部门层, global) vs `knowledge/groups/<domainId>/`
+ * (小组层). The layout is identical locally and in the central repo, so a
+ * clone of the git repo IS the tiered structure; no sync-time remapping.
+ * private stays physically outside (knowledge-private/, gitignored).
+ */
+function knowledgePath(root: string, type: KnowledgeType, id: string, scope: KnowledgeFrontmatter['scope']): string {
+  if (scope.level === 'global') return join(root, 'knowledge', 'department', type, `${id}.md`)
+  if (scope.level === 'domain') return join(root, 'knowledge', 'groups', scope.domainId, type, `${id}.md`)
+  if (scope.level === 'project') return join(root, 'knowledge', 'projects', scope.workspaceId, type, `${id}.md`)
+  return join(root, 'knowledge-private', type, `${id}.md`)
+}
+
+/** Recursive .md finder — reads tolerate BOTH the legacy flat layout and
+ * the tiered layout (frontmatter scope stays the authority, not the path). */
+function* walkMd(base: string): Generator<string> {
+  if (!existsSync(base)) return
+  for (const e of readdirSync(base, { withFileTypes: true })) {
+    const p = join(base, e.name)
+    if (e.isDirectory()) yield* walkMd(p)
+    else if (e.name.endsWith('.md')) yield p
+  }
+}
+
+/** Directories down to `maxDepth` — the titleCache stamp set. */
+function* walkDirs(base: string, depth = 0, maxDepth = 3): Generator<string> {
+  if (!existsSync(base) || depth > maxDepth) return
+  for (const e of readdirSync(base, { withFileTypes: true })) {
+    if (!e.isDirectory()) continue
+    const p = join(base, e.name)
+    yield p
+    yield* walkDirs(p, depth + 1, maxDepth)
+  }
 }
 
 export function renderKnowledgeMarkdown(fm: KnowledgeFrontmatter, body: string): string {
@@ -86,13 +118,11 @@ export function renderKnowledgeMarkdown(fm: KnowledgeFrontmatter, body: string):
   return lines.join('\n')
 }
 
-/** Read one knowledge entry by id (searches all type dirs). */
+/** Read one knowledge entry by id (recursive across the tiered tree). */
 export function getEntry(root: string, id: string): KnowledgeEntry {
   for (const base of [join(root, 'knowledge'), join(root, 'knowledge-private')]) {
-    if (!existsSync(base)) continue
-    for (const type of readdirSync(base)) {
-      const path = join(base, type, `${id}.md`)
-      if (!existsSync(path)) continue
+    for (const path of walkMd(base)) {
+      if (!path.endsWith(`${id}.md`)) continue
       const raw = readFileSync(path, 'utf8')
       const parsed = parseKnowledgeFile(raw)
       return toEntry(parsed.frontmatter, parsed.body, path)
@@ -119,21 +149,14 @@ export function listEntries(root: string, options?: { includeSoftRemoved?: boole
   // ADR-0023: local views span shared knowledge/ AND personal knowledge-private/
   // (gitignored); the git repos only ever see the shared half.
   for (const base of [join(root, 'knowledge'), join(root, 'knowledge-private')]) {
-    if (!existsSync(base)) continue
-    for (const type of readdirSync(base)) {
-      const dir = join(base, type)
-      if (!existsSync(dir)) continue
-      for (const file of readdirSync(dir)) {
-        if (!file.endsWith('.md')) continue
-        const path = join(dir, file)
-        try {
-          const parsed = parseKnowledgeFile(readFileSync(path, 'utf8'))
-          const entry = toEntry(parsed.frontmatter, parsed.body, path)
-          if (options?.includeSoftRemoved !== true && entry.softRemoved) continue
-          out.push(entry)
-        } catch {
-          // Unreadable entry: skip, never break listing (index rebuildable).
-        }
+    for (const path of walkMd(base)) {
+      try {
+        const parsed = parseKnowledgeFile(readFileSync(path, 'utf8'))
+        const entry = toEntry(parsed.frontmatter, parsed.body, path)
+        if (options?.includeSoftRemoved !== true && entry.softRemoved) continue
+        out.push(entry)
+      } catch {
+        // Unreadable entry: skip, never break listing (index rebuildable).
       }
     }
   }
@@ -155,16 +178,13 @@ function titleMap(root: string): Map<string, string> {
   const titles = new Map<string, string>()
   const bases = [join(root, 'knowledge'), join(root, 'knowledge-private')].filter((b) => existsSync(b))
   for (const base of bases) {
-    for (const type of readdirSync(base)) {
-      for (const file of readdirSync(join(base, type))) {
-        if (!file.endsWith('.md')) continue
-        try {
-          const parsed = parseKnowledgeFile(readFileSync(join(base, type, file), 'utf8'))
-          if (parsed.frontmatter.extra['soft_removed'] === true) continue
-          titles.set(parsed.frontmatter.title, parsed.frontmatter.id)
-        } catch {
-          // Unreadable entry: skip (same policy as listEntries).
-        }
+    for (const path of walkMd(base)) {
+      try {
+        const parsed = parseKnowledgeFile(readFileSync(path, 'utf8'))
+        if (parsed.frontmatter.extra['soft_removed'] === true) continue
+        titles.set(parsed.frontmatter.title, parsed.frontmatter.id)
+      } catch {
+        // Unreadable entry: skip (same policy as listEntries).
       }
     }
   }
@@ -178,14 +198,15 @@ function titleMap(root: string): Map<string, string> {
  * the new title and re-stamping keeps the cache warm in O(1). Cross-process
  * writes still invalidate via the stamp on next read.
  */
-/** Shared stamp format for titleCache — MUST be identical in writer & reader. */
+/** Shared stamp format for titleCache — MUST be identical in writer & reader.
+ * Tiered layout: directories down to depth 3 (department/<type>, groups/<domain>
+ * and groups/<domain>/<type>) — file writes bump their containing dir's mtime.
+ * Git pulls only change FILE mtimes, so sync pull bumps dirs explicitly. */
 function cacheStamp(root: string): string {
-  const bases = [join(root, 'knowledge'), join(root, 'knowledge-private')].filter((b) => existsSync(b))
   let stamp = ''
-  for (const base of bases) {
-    for (const t of readdirSync(base)) {
-      stamp += `${base}:${Math.floor(statSync(join(base, t)).mtimeMs)};`
-    }
+  for (const base of [join(root, 'knowledge'), join(root, 'knowledge-private')]) {
+    stamp += `${base}:${existsSync(base) ? Math.floor(statSync(base).mtimeMs) : 0};`
+    for (const dir of walkDirs(base)) stamp += `${dir}:${Math.floor(statSync(dir).mtimeMs)};`
   }
   return stamp
 }
@@ -250,10 +271,10 @@ export function commitKnowledge(
       last_verified: ts,
       extra: input.expiresAt !== undefined ? { expires_at: input.expiresAt } : {},
     }
-    // ADR-0023 three-tier federation: private entries live under
-    // knowledge-private/ (gitignored) so team/department git repos carry
-    // ONLY shared knowledge.
-    const path = input.scope.level === 'private' ? join(root, 'knowledge-private', input.type, `${id}.md`) : entryPath(root, input.type, id)
+    // ADR-0023 three-tier federation + ADR-0024 rev 3 tiered layout:
+    // private → knowledge-private/ (gitignored); shared → department/ or
+    // groups/<domainId>/ so the git repo IS the tiered structure.
+    const path = knowledgePath(root, input.type, id, input.scope)
     mkdirSync(dirname(path), { recursive: true })
     atomicWrite(path, renderKnowledgeMarkdown(fm, input.body))
     helpers.appendLedger(root, {
@@ -289,7 +310,7 @@ export function commitKnowledge(
       last_verified: ts,
       extra: input.expiresAt !== undefined ? { expires_at: input.expiresAt } : {},
     }
-    const path = entryPath(root, input.type, input.id)
+    const path = knowledgePath(root, input.type, input.id, input.scope)
     atomicWrite(path, renderKnowledgeMarkdown(fm, input.body))
     helpers.appendLedger(root, {
       ts,

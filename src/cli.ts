@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
@@ -51,6 +51,17 @@ interface CliArgs {
   teamRepo?: string
   deptRepo?: string
   domainTokens?: string
+}
+
+/** Recursive directory collector (titleCache mtime bump after pull). */
+function* walkDirsHub(base: string): Generator<string> {
+  if (!existsSync(base)) return
+  for (const e of readdirSync(base, { withFileTypes: true })) {
+    if (!e.isDirectory()) continue
+    const p = join(base, e.name)
+    yield p
+    yield* walkDirsHub(p)
+  }
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -1079,6 +1090,20 @@ export function syncCommand(root: string, sub: string, remote?: string, message?
           return hasCommit ? git(root, ['rebase', 'FETCH_HEAD']) : git(root, ['reset', '--hard', 'FETCH_HEAD'])
         })()
       : git(root, ['pull', '--rebase'])
+    // Pull only changes FILE mtimes; the titleCache stamps DIRECTORY mtimes,
+    // so bump every knowledge dir or a cross-process cache would go stale.
+    if (pull.ok) {
+      const now = new Date()
+      for (const base of [join(root, 'knowledge'), join(root, 'knowledge-private')]) {
+        for (const dir of [base, ...Array.from(walkDirsHub(base))]) {
+          try {
+            utimesSync(dir, now, now)
+          } catch {
+            // dir vanished mid-walk: harmless
+          }
+        }
+      }
+    }
     return { ok: pull.ok, output: pull.output }
   }
   return { ok: false, error: `unknown sync subcommand: ${sub}` }
