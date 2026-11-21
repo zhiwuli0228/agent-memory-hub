@@ -266,6 +266,33 @@ export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (arg
         note: typeof args['note'] === 'string' ? args['note'] : undefined,
         at: new Date().toISOString(),
       })
+      // 记忆及时生成（restores the predecessor's auto-capture): a substantive
+      // closing note becomes a PENDING proposal for panel review — the model
+      // no longer has to remember to call memory_propose separately.
+      const note = typeof args['note'] === 'string' ? args['note'] : ''
+      if (args['assessment'] === 'proposed' && note.trim().length >= 50) {
+        try {
+          const helpers = {
+            readSequences: hub.readSequences,
+            writeSequences: hub.writeSequences,
+            appendLedger: (r: string, rec: unknown) => hub.appendLedger(`${r}/records/ledger.jsonl`.replace('//records', '/records'), rec as never),
+          }
+          const title = `任务回写：${note.trim().slice(0, 30)}`
+          const proposal = hub.createProposal(ctx.root, {
+            type: 'knowledge',
+            title,
+            summary: note.trim().slice(0, 120),
+            scope: { level: 'project', workspaceId: ctx.workspace.workspaceId },
+            tags: ['auto-writeback'],
+            body: note,
+            actor: process.env['MEMHUB_USER'] ?? 'session-close',
+            sourceRefs: ['task.closed'],
+          }, helpers)
+          return { closed: true, proposal: proposal.id, hint: '面板 inbox 审批后入库' }
+        } catch {
+          // duplicate title / validation — the note is still recorded above
+        }
+      }
       return { closed: true }
     },
   })

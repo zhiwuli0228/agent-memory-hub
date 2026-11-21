@@ -1,6 +1,7 @@
 import { buildIndex, search, type SearchHit } from './search.js'
 import type { SearchIndex } from './search.js'
 import { appendLedger, ledgerPath } from './ledger.js'
+import { listEntries } from './store.js'
 import { randomUUID } from 'node:crypto'
 
 /**
@@ -68,6 +69,26 @@ export function preflight(
     abstract: hit.abstract,
     score: hit.score,
   }))
+  // KEY entries (frontmatter extra.key: true — the predecessor's "pinned
+  // memory") ALWAYS ride along, intent-independent, newest first. Restores
+  // the old "usage-time query" quality: pinned knowledge is never missed
+  // just because the intent string didn't match its wording.
+  const keyEntries = listEntries(hubRoot)
+    .filter((e) => e.frontmatter.extra['key'] === true && !e.softRemoved)
+    .sort((a, b) => (b.frontmatter.updated ?? '').localeCompare(a.frontmatter.updated ?? ''))
+    .slice(0, 2)
+  const seenIds = new Set(surfaced.map((h) => h.id))
+  for (const e of keyEntries) {
+    if (seenIds.has(e.frontmatter.id)) continue
+    surfaced.unshift({
+      id: e.frontmatter.id,
+      version: e.frontmatter.version,
+      title: e.frontmatter.title,
+      abstract: e.frontmatter.summary,
+      score: Number.POSITIVE_INFINITY,
+    })
+    seenIds.add(e.frontmatter.id)
+  }
   const pack = surfaced.length > 0 ? renderPack(hits) : undefined
   const result: PreflightResult = {
     status: surfaced.length > 0 ? 'ready' : 'no_match',

@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process'
 import * as hub from 'agent-memory-hub'
 import { resolveHubRoot, type AdapterConfig, type HostContext, type ToolDefinition } from './host-types.js'
 import { createTools, createHubContext } from './tools.js'
@@ -122,14 +123,29 @@ export function apply(ctx: HostContext, config?: AdapterConfig): void {
             const cwd = context.agent?.session?.header?.cwd
             const intent = cwd !== undefined ? `项目上下文 ${cwd.split(/[\\/]/).pop() ?? cwd}` : '当前工作上下文'
             try {
+              // Federation liveness line (restores "可见的远端变化感知"):
+              // local entry count + ahead/behind vs the central remote.
+              let liveness = ''
+              try {
+                const total = hub.listEntries(hubCtx.root).length
+                const st = execSync(`git -C ${JSON.stringify(hubCtx.root)} status -sb`, { timeout: 3000 }).toString().split('\n')[0] ?? ''
+                const ahead = /ahead (\d+)/.exec(st)?.[1]
+                const behind = /behind (\d+)/.exec(st)?.[1]
+                const state = ahead !== undefined || behind !== undefined
+                  ? `领先 ${ahead ?? 0} / 落后 ${behind ?? 0}（memhub sync push/pull 同步）`
+                  : '与中心一致'
+                liveness = `本地 ${total} 条（含私有）· 与中心：${state}\n`
+              } catch {
+                // not a git hub or git missing — skip the line silently
+              }
               const pack = hub.preflight(hubCtx.index, hubCtx.root, hubCtx.workspace.workspaceId, intent, {
                 teamId: process.env['MEMHUB_TEAM'],
               })
               const hits = pack.hits ?? []
               const lines = hits.map((hit: { id: string; title: string; abstract?: string }) => `- ${hit.id} ${hit.title}${hit.abstract ? `：${hit.abstract}` : ''}`)
-              lastText = lines.length === 0
-                ? '（记忆中枢：本意图暂无命中。会话收尾时若有可沉淀知识，用 memory_propose 提交、memory_close_task 关闭任务。）'
-                : `【记忆中枢快照 · 意图：${intent}】开始工作前可参考：\n${lines.join('\n')}\n（详情用 memory_get；会话收尾时用 memory_propose 提交新知识、memory_close_task 关闭任务。）`
+              lastText = `${liveness}` + (lines.length === 0
+                ? '（记忆中枢：本意图暂无命中。会话收尾时若有可沉淀知识，用 memory_propose 提交、memory_close_task 关闭任务——有实质 note 的 close 会自动生成待审提案。）'
+                : `【记忆中枢快照 · 意图：${intent}】开始工作前可参考：\n${lines.join('\n')}\n（详情用 memory_get；标 key: true 的条目会永远伴随注入。会话收尾时用 memory_propose 提交新知识、memory_close_task 关闭任务——有实质 note 的 close 自动生成待审提案。）`)
             } catch (error) {
               lastText = ''
               ctx.logger?.warn(`agent-memory-hub-dsh: preflight snapshot failed: ${error instanceof Error ? error.message : String(error)}`)

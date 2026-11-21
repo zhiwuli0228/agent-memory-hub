@@ -64,6 +64,41 @@ function* walkDirsHub(base: string): Generator<string> {
   }
 }
 
+/** ADR-0024 personal tier: every user gets ONE private cloud repo mirroring
+ * their whole hub (including knowledge-private/) via a SECOND git dir in the
+ * same work tree (.git-personal — separate index, own excludes without the
+ * knowledge-private ignore). Never touches the central remote. */
+function personalCommand(root: string, sub: string, remote?: string): { ok: boolean; [key: string]: unknown } {
+  const personalDir = join(root, '.git-personal')
+  const gd = ['--git-dir', personalDir, '--work-tree', root]
+  if (sub === 'init') {
+    if (remote === undefined || remote === '') return { ok: false, error: 'usage: memhub personal init --remote git@github.com:<you>/memory-hub-<user>.git' }
+    if (!existsSync(personalDir)) {
+      const init = git(root, [...gd, 'init', '-b', 'personal'])
+      if (!init.ok) return { ok: false, error: init.output }
+    }
+    const hasRemote = git(root, [...gd, 'remote', 'get-url', 'personal'])
+    if (!hasRemote.ok) git(root, [...gd, 'remote', 'add', 'personal', remote])
+    // Own excludes = the hub template MINUS knowledge-private (it must travel).
+    const exclDir = join(personalDir, 'info')
+    mkdirSync(exclDir, { recursive: true })
+    writeFileSync(join(exclDir, 'exclude'), ['records/', 'index/', 'pending/', 'history/', 'journal/', 'hub.yaml', 'MEMORY-HUB.md', '.git', '.git-personal', '.gitignore', '.DS_Store', 'Thumbs.db', ''].join('\n'))
+    const configPath = join(root, 'hub.yaml')
+    const existing = existsSync(configPath) ? readFileSync(configPath, 'utf8').replace(/personal-remote:.*\n?/g, '').trimEnd() + '\n' : ''
+    atomicWrite(configPath, `${existing}personal-remote: ${remote}\n`)
+    return { ok: true, note: `个人私有仓已绑定（独立 git dir，knowledge-private 会同步）:${remote}` }
+  }
+  if (sub === 'sync') {
+    if (!existsSync(personalDir)) return { ok: false, error: 'not configured — run: memhub personal init --remote <url>' }
+    const add = git(root, [...gd, 'add', '-A'])
+    if (!add.ok) return { ok: false, stage: 'add', error: add.output }
+    const commit = git(root, [...gd, 'commit', '-m', `personal snapshot ${new Date().toISOString()}`])
+    const push = git(root, [...gd, 'push', '-u', 'personal', 'personal'])
+    return { ok: push.ok, committed: commit.ok ? 'yes' : 'nothing new', pushed: push.ok ? 'yes' : 'no', output: push.output || commit.output }
+  }
+  return { ok: false, error: `unknown personal subcommand: ${sub}` }
+}
+
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = { _: [], root: process.env['MEMHUB_ROOT'] ?? process.cwd() }
   for (let i = 0; i < argv.length; i += 1) {
@@ -489,6 +524,16 @@ export function main(argv: string[]): number {
         const sub = args._[1]
         if (sub === undefined) throw new HubError(ErrorCode.E_VALIDATION, 'usage: memhub team <init|aggregate> [--team-repo url] [--dept-repo url]')
         const result = teamCommand(root, sub, args.teamRepo, args.deptRepo)
+        out(result, args.json)
+        return result.ok ? 0 : 1
+      }
+      case 'personal': {
+        // ADR-0024 personal tier: per-user private cloud repo mirror.
+        initHub(args.root ?? process.cwd())
+        const root = requireHub(args)
+        const sub = args._[1]
+        if (sub === undefined) throw new HubError(ErrorCode.E_VALIDATION, 'usage: memhub personal <init|sync> [--remote url]')
+        const result = personalCommand(root, sub, args.remote)
         out(result, args.json)
         return result.ok ? 0 : 1
       }
