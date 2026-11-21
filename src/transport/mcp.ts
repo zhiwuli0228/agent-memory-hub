@@ -32,6 +32,7 @@ import {
   listProposals,
 } from '../core/store.js'
 import { requireApproval, type ApprovalChannel } from '../core/approval.js'
+import { splitFrontmatter } from '../core/frontmatter.js'
 import { preflight } from '../core/inject.js'
 import { appendJournal, readJournal } from '../core/journal.js'
 import { detectDejaVu, indexTranscript, readTranscriptIndex } from '../core/transcript.js'
@@ -467,7 +468,7 @@ function commitFromProposal(state: TransportState, proposalId: string): unknown 
       summary: proposal.frontmatter.summary,
       scope: proposal.frontmatter.scope,
       tags: proposal.frontmatter.tags,
-      body: readFileSync(proposal.path, 'utf8').split('---')[2]?.trim() ?? '',
+      body: splitFrontmatter(readFileSync(proposal.path, 'utf8'))?.body ?? '',
       actor: 'panel',
     },
     {

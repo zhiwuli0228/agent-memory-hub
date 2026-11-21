@@ -12,6 +12,7 @@ import { acquireLock, assertFencing, lockInfo, releaseLock } from './core/lock.j
 import { registerWorkspace, resolveWorkspace } from './core/registry.js'
 import { buildIndex, emptyMetrics, search } from './core/search.js'
 import { commitKnowledge, getEntry, listEntries, listProposals } from './core/store.js'
+import { splitFrontmatter } from './core/frontmatter.js'
 import { analyzeCurate } from './core/curate.js'
 import { validateHub } from './core/validate.js'
 import { requireApproval } from './core/approval.js'
@@ -68,7 +69,7 @@ function* walkDirsHub(base: string): Generator<string> {
  * their whole hub (including knowledge-private/) via a SECOND git dir in the
  * same work tree (.git-personal — separate index, own excludes without the
  * knowledge-private ignore). Never touches the central remote. */
-function personalCommand(root: string, sub: string, remote?: string): { ok: boolean; [key: string]: unknown } {
+export function personalCommand(root: string, sub: string, remote?: string): { ok: boolean; [key: string]: unknown } {
   const personalDir = join(root, '.git-personal')
   const gd = ['--git-dir', personalDir, '--work-tree', root]
   if (sub === 'init') {
@@ -90,20 +91,34 @@ function personalCommand(root: string, sub: string, remote?: string): { ok: bool
   }
   if (sub === 'sync') {
     if (!existsSync(personalDir)) return { ok: false, error: 'not configured — run: memhub personal init --remote <url>' }
-    // 双向同步（同一人在多台机器 = 完全同一份数据）：
-    //   1) fetch the personal branch;  2) restore its knowledge-private/
-    //   subtree into the work tree (ONLY private — the shared tier belongs
-    //   to the central remote and is never touched by this line);
-    //   3) add everything + force-add private;  4) commit;  5) push.
-    // Two machines alternating `personal sync` converge on one dataset.
+    // F02: two machines alternating `personal sync` must converge on ONE
+    // dataset WITHOUT silent overwrites. Merge semantics, never
+    // checkout-overwrite:
+    //   1) commit any local changes first (clean base for the merge);
+    //   2) fetch the personal branch;
+    //   3) merge it in — both sides' entries survive; a real conflict on the
+    //      same file ABORTS loudly (stage: 'merge'), never continues to push;
+    //   4) commit + push.
+    const addLocal = git(root, [...gd, 'add', '-A'])
+    if (addLocal.ok && existsSync(join(root, 'knowledge-private'))) git(root, [...gd, 'add', '-f', 'knowledge-private'])
+    if (addLocal.ok) git(root, [...gd, 'commit', '-m', `local snapshot ${new Date().toISOString()}`])
     const url = git(root, [...gd, 'remote', 'get-url', 'personal'])
     if (url.ok) {
       const fetched = git(root, [...gd, 'fetch', 'personal', 'personal'])
       if (fetched.ok) {
-        const restore = git(root, [...gd, 'checkout', 'FETCH_HEAD', '--', 'knowledge-private'])
-        if (!restore.ok && !restore.output.includes("pathspec")) {
-          // first sync against an empty repo: nothing to restore yet
+        const localHead = git(root, [...gd, 'rev-parse', 'HEAD']).ok
+        const remoteHead = git(root, [...gd, 'rev-parse', 'personal/personal']).ok
+        if (remoteHead && !localHead) {
+          // Fresh local, remote already has history: adopt it whole.
+          const adopt = git(root, [...gd, 'reset', '--hard', 'personal/personal'])
+          if (!adopt.ok) return { ok: false, stage: 'merge', error: adopt.output }
+        } else if (remoteHead && localHead) {
+          const merge = git(root, [...gd, 'merge', 'personal/personal', '--no-edit'])
+          if (!merge.ok) return { ok: false, stage: 'merge', error: merge.output, hint: '同一私有条目的两机修改需人工合并：解决后 git -C <hub> --git-dir=.git-personal --work-tree=<hub> add -A 并 commit，再重跑 memhub personal sync' }
         }
+        // else: empty remote or nothing new — nothing to integrate
+      } else if (!fetched.output.includes("couldn't find remote ref")) {
+        return { ok: false, stage: 'fetch', error: fetched.output }
       }
     }
     const add = git(root, [...gd, 'add', '-A'])
@@ -443,7 +458,7 @@ export function main(argv: string[]): number {
                   summary: proposal.frontmatter.summary,
                   scope: proposal.frontmatter.scope,
                   tags: proposal.frontmatter.tags,
-                  body: readFileSync(proposal.path, 'utf8').split('---')[2]?.trim() ?? '',
+                  body: splitFrontmatter(readFileSync(proposal.path, 'utf8'))?.body ?? '',
                   actor: 'cli-human',
                 },
                 { readSequences, writeSequences, appendLedger: humanLedger },
@@ -693,7 +708,7 @@ export async function hubSync(
             summary: e.frontmatter.summary,
             tags: e.frontmatter.tags,
             scope: e.frontmatter.scope, // ADR-0019: team/project scope travels with the entry
-            body: readFileSync(e.path, 'utf8').split('---')[2]?.trim() ?? '',
+            body: splitFrontmatter(readFileSync(e.path, 'utf8'))?.body ?? '',
             sourceRefs: [`hub:${e.frontmatter.id}@v${e.frontmatter.version}`],
             originId: e.frontmatter.id,
             origin: `hub-push:${root.replace(/\\/g, '/').split('/').pop() ?? 'local'}`,
@@ -711,7 +726,10 @@ export async function hubSync(
       }
     }
     const pushed = results.filter((r) => r.ok).length
-    if (pushed === entries.length) writeJsonState(root, PUSH_STATE_FILE, { lastPushedAt: new Date().toISOString() })
+    // F03: advance the watermark ONLY when every shareable entry landed —
+    // comparing against entries2.length (the shareable set), not the raw
+    // list: a private entry must not block the watermark forever.
+    if (pushed === entries2.length) writeJsonState(root, PUSH_STATE_FILE, { lastPushedAt: new Date().toISOString() })
     return { ok: pushed > 0, pushed, total: entries2.length, privateSkipped: privateCount, results, nextStep: 'central inbox review: approve = merge into the central knowledge base' }
   }
   if (sub === 'pull') {
@@ -777,7 +795,10 @@ export async function hubSync(
         errors.push(`${listedEntry.id}: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
-    writeJsonState(root, PULL_STATE_FILE, { lastPulledAt: new Date().toISOString() })
+    // F03: a PARTIAL failure must not advance the watermark — otherwise the
+    // entries that errored can never be retried (they fall behind it). Only
+    // a clean pass moves the cursor; a retry re-fetches the failed window.
+    if (errors.length === 0) writeJsonState(root, PULL_STATE_FILE, { lastPulledAt: new Date().toISOString() })
     autoCommit(root, `pull: applied ${applied.length} central entries`)
     return { ok: errors.length === 0, applied, skipped, errors, from: effectiveSince || '(beginning)' }
   }
@@ -838,18 +859,23 @@ interface PublishEntryPayload {
 function buildPublishPayload(root: string, ids: string[]): PublishEntryPayload[] {
   const all = listEntries(root, { includeSoftRemoved: false })
   const selected = ids.length > 0 ? all.filter((e) => ids.includes(e.frontmatter.id)) : all
-  return selected.map((e) => ({
-    id: e.frontmatter.id,
-    version: e.frontmatter.version,
-    type: e.frontmatter.type,
-    title: e.frontmatter.title,
-    summary: e.frontmatter.summary,
-    scope: e.frontmatter.scope,
-    tags: e.frontmatter.tags,
-    updated: e.frontmatter.updated ?? '',
-    sourceRefs: String(e.frontmatter.extra['source_refs'] ?? ''),
-    body: readFileSync(e.path, 'utf8').split('---')[2]?.trim() ?? '',
-  }))
+  // F01 (ADR-0024 public-outlet gate): private NEVER leaves the hub through
+  // ANY outlet — hubSync filters it, so the generic publish payload must too.
+  // No default-public list may send private; gitignore is not the gate.
+  return selected
+    .filter((e) => e.frontmatter.scope.level !== 'private')
+    .map((e) => ({
+      id: e.frontmatter.id,
+      version: e.frontmatter.version,
+      type: e.frontmatter.type,
+      title: e.frontmatter.title,
+      summary: e.frontmatter.summary,
+      scope: e.frontmatter.scope,
+      tags: e.frontmatter.tags,
+      updated: e.frontmatter.updated ?? '',
+      sourceRefs: String(e.frontmatter.extra['source_refs'] ?? ''),
+      body: splitFrontmatter(readFileSync(e.path, 'utf8'))?.body ?? '',
+    }))
 }
 
 export interface PublishTransport {

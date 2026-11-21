@@ -30,6 +30,7 @@ function analyzeIntakeDuplicates(root: string, title: string, originId?: string)
 }
 import { registerWorkspace, resolveWorkspace, type ResolvedWorkspace } from '../core/registry.js'
 import { readJournal } from '../core/journal.js'
+import { splitFrontmatter } from '../core/frontmatter.js'
 import { readLedger } from '../core/ledger.js'
 import { autoCommit } from './autocommit.js'
 import type { KnowledgeScope, KnowledgeType } from '../core/types.js'
@@ -117,7 +118,7 @@ function commitOne(hubRoot: string, proposalId: string, note?: string): { knowle
       summary: proposal.frontmatter.summary,
       scope: proposal.frontmatter.scope,
       tags: proposal.frontmatter.tags,
-      body: readFileSync(proposal.path, 'utf8').split('---')[2]?.trim() ?? '',
+      body: splitFrontmatter(readFileSync(proposal.path, 'utf8'))?.body ?? '',
       actor: 'panel',
     },
     { readSequences, writeSequences, appendLedger: (root, record) => appendLedger(ledgerPath(root), record) },

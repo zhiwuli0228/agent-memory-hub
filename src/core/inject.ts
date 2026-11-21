@@ -1,4 +1,4 @@
-import { buildIndex, search, type SearchHit } from './search.js'
+import { buildIndex, isVisibleIn, search, type SearchHit } from './search.js'
 import type { SearchIndex } from './search.js'
 import { appendLedger, ledgerPath } from './ledger.js'
 import { listEntries } from './store.js'
@@ -34,8 +34,8 @@ export function estimateTokens(text: string): number {
   return Math.ceil(cjk + asciiWords * 1.3)
 }
 
-/** Render the L0 pack: one line per hit — [ID] title — abstract. */
-export function renderPack(hits: SearchHit[]): string {
+/** Render the L0 pack: one line per surfaced item — [ID] title — abstract. */
+export function renderPack(hits: Array<{ id: string; title: string; abstract: string }>): string {
   return hits
     .map((hit) => `[${hit.id}] ${hit.title} — ${hit.abstract}`)
     .join('\n')
@@ -61,6 +61,7 @@ export function preflight(
   options?: PreflightOptions & { teamId?: string },
 ): PreflightResult {
   const limit = options?.limit ?? 3
+  const viewer = { workspaceId, teamId: options?.teamId }
   const hits = search(index, intent, { workspaceId, teamId: options?.teamId, detail: 'L0', limit, types: options?.types })
   const surfaced = hits.map((hit) => ({
     id: hit.id,
@@ -70,11 +71,17 @@ export function preflight(
     score: hit.score,
   }))
   // KEY entries (frontmatter extra.key: true — the predecessor's "pinned
-  // memory") ALWAYS ride along, intent-independent, newest first. Restores
-  // the old "usage-time query" quality: pinned knowledge is never missed
-  // just because the intent string didn't match its wording.
+  // memory") ALWAYS ride along, intent-independent, newest first.
+  // F06 gates: the same viewer visibility as the query (a key pinned in
+  // ANOTHER project/team must not auto-inject here), plus status gate —
+  // deprecated/withdrawn/soft-removed keys never auto-inject.
   const keyEntries = listEntries(hubRoot)
-    .filter((e) => e.frontmatter.extra['key'] === true && !e.softRemoved)
+    .filter((e) =>
+      e.frontmatter.extra['key'] === true &&
+      !e.softRemoved &&
+      e.frontmatter.status !== 'deprecated' &&
+      isVisibleIn(e.frontmatter.scope, viewer),
+    )
     .sort((a, b) => (b.frontmatter.updated ?? '').localeCompare(a.frontmatter.updated ?? ''))
     .slice(0, 2)
   const seenIds = new Set(surfaced.map((h) => h.id))
@@ -89,7 +96,10 @@ export function preflight(
     })
     seenIds.add(e.frontmatter.id)
   }
-  const pack = surfaced.length > 0 ? renderPack(hits) : undefined
+  // F05: hits, pack and audit must describe the SAME version set — the pack
+  // is rendered from `surfaced` (which includes pinned keys), never from the
+  // raw search hits.
+  const pack = surfaced.length > 0 ? renderPack(surfaced) : undefined
   const result: PreflightResult = {
     status: surfaced.length > 0 ? 'ready' : 'no_match',
     hits: surfaced,
