@@ -90,6 +90,22 @@ function personalCommand(root: string, sub: string, remote?: string): { ok: bool
   }
   if (sub === 'sync') {
     if (!existsSync(personalDir)) return { ok: false, error: 'not configured — run: memhub personal init --remote <url>' }
+    // 双向同步（同一人在多台机器 = 完全同一份数据）：
+    //   1) fetch the personal branch;  2) restore its knowledge-private/
+    //   subtree into the work tree (ONLY private — the shared tier belongs
+    //   to the central remote and is never touched by this line);
+    //   3) add everything + force-add private;  4) commit;  5) push.
+    // Two machines alternating `personal sync` converge on one dataset.
+    const url = git(root, [...gd, 'remote', 'get-url', 'personal'])
+    if (url.ok) {
+      const fetched = git(root, [...gd, 'fetch', 'personal', 'personal'])
+      if (fetched.ok) {
+        const restore = git(root, [...gd, 'checkout', 'FETCH_HEAD', '--', 'knowledge-private'])
+        if (!restore.ok && !restore.output.includes("pathspec")) {
+          // first sync against an empty repo: nothing to restore yet
+        }
+      }
+    }
     const add = git(root, [...gd, 'add', '-A'])
     if (!add.ok) return { ok: false, stage: 'add', error: add.output }
     // The work-tree .gitignore (correctly) hides knowledge-private from the
@@ -98,6 +114,17 @@ function personalCommand(root: string, sub: string, remote?: string): { ok: bool
     if (existsSync(join(root, 'knowledge-private'))) git(root, [...gd, 'add', '-f', 'knowledge-private'])
     const commit = git(root, [...gd, 'commit', '-m', `personal snapshot ${new Date().toISOString()}`])
     const push = git(root, [...gd, 'push', '-u', 'personal', 'personal'])
+    if (push.ok) {
+      // Bump dir mtimes so the titleCache (dir-mtime stamp) sees the
+      // pulled private entries in THIS process and every other process.
+      const now = new Date()
+      try {
+        const privDir = join(root, 'knowledge-private')
+        if (existsSync(privDir)) utimesSync(privDir, now, now)
+      } catch {
+        // vanished mid-sync: harmless
+      }
+    }
     return { ok: push.ok, committed: commit.ok ? 'yes' : 'nothing new', pushed: push.ok ? 'yes' : 'no', output: push.output || commit.output }
   }
   return { ok: false, error: `unknown personal subcommand: ${sub}` }

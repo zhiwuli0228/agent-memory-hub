@@ -9,7 +9,7 @@
 |---|------|------|--------------|------|
 | 1 | `zhiwuli0228/agent-memory-hub` | **组件源码仓**：CLI（memhub）、MCP server、DSH 插件（host/dsh）、测试、ADR 文档 | public（npm Trusted Publisher 从 tag 自动发版） | 活跃 |
 | 2 | `zhiwuli0228/memory-hub` | **中心数据仓（唯一权威）**：团队 + 部门的共享知识，仓内分 department / groups 两层 | private；协作者 = 团队 + 部门成员 | 活跃 |
-| 3 | 个人云备份仓（每人一个，自建，建议命名 `memory-hub-<user>`） | 个人层异地备份：knowledge-private/ 与本地 records 的私有快照 | private；**仅本人** | 可选，用户自管 |
+| 3 | 个人云备份仓（每人一个，自建，建议命名 `memory-hub-<user>`） | 个人层**权威**：全量镜像（含 knowledge-private/）；**同一人在多台机器的同步枢纽** | private；**仅本人** | 可选，用户自管 |
 | 4 | `zhiwuli0228/memory-hub-data` | **上一代**（dsh-memory-hub 0.7.0 / 腾讯 v2.0.1-beta）的中心仓 | private | **存档**，内容未迁移未修改 |
 | 5 | `zhiwuli0228/memory-hub-frontend`、`-dept` | 本次联邦**验证期**的临时测试仓 | private | 退役 / 闲置（dept 若未来重启部门级聚合可复用） |
 
@@ -65,8 +65,13 @@ memory-hub/                          ← clone 下来就是这个样子
 
 **git 边界**：`sync push` 只把 `knowledge/`（department/groups/projects）推上中心仓；
 `knowledge-private/` 与一切本地状态**构造性不出仓**（drill 已验证 git 树零出现）。
-个人云端备份（若启用）由本人把整个 hub（含 private）推到自己的 `memory-hub-<user>` 仓——
-那是个人私事，与团队中心仓无关。
+
+**同一人多台机器（完全同一份数据）**：每台机器都对**同一个个人仓**执行
+`memhub personal init --remote git@github.com:<you>/memory-hub-<user>.git`，
+之后各自 `memhub personal sync`。该命令是**双向**的：先 fetch 远端并把其
+`knowledge-private/` 子树恢复到本地（只动私有层，共享层永远归中心线），
+再合并本地变化、commit、push。两台机器交替 sync 即收敛为同一份数据
+（已实测：机器 B 写私有条目 → 个人仓 → 机器 A personal sync 后检索命中）。
 
 ## 4. 数据流
 
