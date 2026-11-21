@@ -92,6 +92,10 @@ function personalCommand(root: string, sub: string, remote?: string): { ok: bool
     if (!existsSync(personalDir)) return { ok: false, error: 'not configured — run: memhub personal init --remote <url>' }
     const add = git(root, [...gd, 'add', '-A'])
     if (!add.ok) return { ok: false, stage: 'add', error: add.output }
+    // The work-tree .gitignore (correctly) hides knowledge-private from the
+    // CENTRAL remote — but this is the PERSONAL mirror, where private MUST
+    // travel. Force-add it on top of the normal add.
+    if (existsSync(join(root, 'knowledge-private'))) git(root, [...gd, 'add', '-f', 'knowledge-private'])
     const commit = git(root, [...gd, 'commit', '-m', `personal snapshot ${new Date().toISOString()}`])
     const push = git(root, [...gd, 'push', '-u', 'personal', 'personal'])
     return { ok: push.ok, committed: commit.ok ? 'yes' : 'nothing new', pushed: push.ok ? 'yes' : 'no', output: push.output || commit.output }
