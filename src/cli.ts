@@ -80,6 +80,11 @@ export function personalCommand(root: string, sub: string, remote?: string): { o
     }
     const hasRemote = git(root, [...gd, 'remote', 'get-url', 'personal'])
     if (!hasRemote.ok) git(root, [...gd, 'remote', 'add', 'personal', remote])
+    // CI runners / fresh machines have no global git identity — the personal
+    // mirror must still be able to commit. Set a repo-local neutral identity
+    // ONLY when none exists (a real configured identity is never clobbered).
+    if (!git(root, [...gd, 'config', 'user.email']).ok) git(root, [...gd, 'config', 'user.email', 'memhub-personal@local'])
+    if (!git(root, [...gd, 'config', 'user.name']).ok) git(root, [...gd, 'config', 'user.name', 'memhub-personal'])
     // Own excludes = the hub template MINUS knowledge-private (it must travel).
     const exclDir = join(personalDir, 'info')
     mkdirSync(exclDir, { recursive: true })
