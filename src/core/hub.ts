@@ -145,6 +145,12 @@ records/
 # 根级写锁（租约心跳文件）同样是 per-hub 本地状态：一旦被提交进共享历史，
 # 任何获取/释放锁都会造成 tracked 变更，直接卡死同步前的 rebase。
 .writer.lock
+# 待审候选（pending/）与版本快照（history/）也是 per-hub 本地状态：
+# 提案的增删（propose/reject/approve）与版本历史的追加都不应制造 tracked
+# 变更——否则一个 reject 就会让下一次 sync 的 pre-pull rebase 失败。
+pending/
+history/
+journal/
 
 # ── 常规系统噪声 ──
 .DS_Store

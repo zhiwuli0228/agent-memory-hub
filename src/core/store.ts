@@ -361,6 +361,14 @@ export function commitKnowledge(
  * pushed entry applied on the central hub — create-as-id or version bump);
  * `supersedes` = local re-extraction target (requires it to exist). Either
  * keeps entry identity stable: never a duplicate.
+ *
+ * D06 arbitration (ADR-0025): a supersedes revision records the target
+ * version it was based on (`supersedes_base`, stamped by createProposal). If
+ * the target has since advanced, the revision is a CONCURRENT DIVERGENCE —
+ * approving it would silently overwrite someone else's evidence. It is
+ * isolated as a dispute instead: nothing is written, the proposal stays in
+ * the inbox, the ledger records dispute.raised, and a human either rejects
+ * it or explicitly overrides (audited dispute.overridden).
  */
 export function commitProposal(
   root: string,
@@ -370,8 +378,8 @@ export function commitProposal(
     writeSequences: (root: string, seq: Record<string, number>) => void
     appendLedger: (root: string, record: LedgerRecord) => void
   },
-  opts?: { channel?: string; note?: string },
-): { knowledgeId: string; version: number; path: string; superseded?: string } {
+  opts?: { channel?: string; note?: string; override?: boolean },
+): CommitProposalResult {
   const rawOriginId = proposal.frontmatter.extra['origin_id']
   const originId = typeof rawOriginId === 'string' && rawOriginId !== '' && rawOriginId !== '[]' ? rawOriginId : undefined
   const rawSupersedes = proposal.frontmatter.extra['supersedes']
@@ -379,6 +387,14 @@ export function commitProposal(
     typeof rawSupersedes === 'string' && rawSupersedes !== '' && rawSupersedes !== '[]'
       ? rawSupersedes.split(/\s+/)[0]
       : undefined
+  const rawBase = proposal.frontmatter.extra['supersedes_base']
+  // The frontmatter parser re-types bare numbers, so accept number or numeric string.
+  const baseVersion =
+    typeof rawBase === 'number' && Number.isFinite(rawBase)
+      ? rawBase
+      : typeof rawBase === 'string' && rawBase !== '' && Number.isFinite(Number(rawBase))
+        ? Number(rawBase)
+        : undefined
   const targetId = originId ?? supersedesTarget
   let targetExists = false
   if (targetId !== undefined && originId === undefined) {
@@ -390,6 +406,42 @@ export function commitProposal(
     }
   }
   const superseding = targetId !== undefined && (originId !== undefined || targetExists)
+  // D06: concurrent-divergence gate. Only local supersedes revisions (not
+  // cross-hub origin upserts — those follow the central hub's own review) and
+  // only when the base version is known (proposed against an existing target).
+  if (superseding && originId === undefined && supersedesTarget !== undefined && baseVersion !== undefined) {
+    const currentVersion = getEntry(root, supersedesTarget).frontmatter.version
+    if (currentVersion > baseVersion && opts?.override !== true) {
+      helpers.appendLedger(root, {
+        type: 'dispute.raised',
+        proposalId: proposal.id,
+        targetId: supersedesTarget,
+        baseVersion,
+        currentVersion,
+        at: new Date().toISOString(),
+      })
+      return {
+        disputed: true,
+        proposalId: proposal.id,
+        targetId: supersedesTarget,
+        baseVersion,
+        currentVersion,
+        reason: `目标 ${supersedesTarget} 已被推进到 v${currentVersion}（你的修订基于 v${baseVersion}）——分歧已隔离，未覆盖`,
+        hint: '先 memhub sync pull 基于最新版重新提交修订；若确认要覆盖请带 --override（会记录 dispute.overridden 审计）',
+      }
+    }
+    if (currentVersion > baseVersion) {
+      helpers.appendLedger(root, {
+        type: 'dispute.overridden',
+        proposalId: proposal.id,
+        targetId: supersedesTarget,
+        baseVersion,
+        currentVersion,
+        channel: opts?.channel ?? 'human',
+        at: new Date().toISOString(),
+      })
+    }
+  }
   const committed = commitKnowledge(
     root,
     {
@@ -420,6 +472,18 @@ export function commitProposal(
   })
   return { knowledgeId: committed.id, version: committed.version, path: committed.path, ...(superseding ? { superseded: targetId } : {}) }
 }
+
+export type CommitProposalResult =
+  | {
+      disputed: true
+      proposalId: string
+      targetId: string
+      baseVersion: number
+      currentVersion: number
+      reason: string
+      hint: string
+    }
+  | { disputed?: false; knowledgeId: string; version: number; path: string; superseded?: string }
 
 /** Soft-remove: status=deprecated + ledger record. Physical delete is explicit-only. */
 export function deprecateEntry(
@@ -485,6 +549,19 @@ export function createProposal(
   // Same collision guard as knowledge ids: pending proposals pulled or
   // created earlier locally must never be re-minted.
   const proposalId = nextProposalId(root, helpers.readSequences, helpers.writeSequences, listProposals(root).map((p) => p.id))
+  // D06 arbitration: record the TARGET VERSION this revision is based on, so
+  // approval can detect a concurrent advance (someone else pushed vN+1 while
+  // this proposal was being written) and isolate the dispute instead of
+  // silently overwriting. Absent target locally -> no base -> legacy path.
+  let supersedesBase: number | undefined
+  const supersedesFirst = input.supersedes?.[0]
+  if (supersedesFirst !== undefined) {
+    try {
+      supersedesBase = getEntry(root, supersedesFirst).frontmatter.version
+    } catch {
+      supersedesBase = undefined
+    }
+  }
   const fm: KnowledgeFrontmatter = {
     id: proposalId,
     version: 1,
@@ -499,6 +576,7 @@ export function createProposal(
     extra: {
       source_refs: input.sourceRefs.join(' '),
       ...(input.supersedes !== undefined && input.supersedes.length > 0 ? { supersedes: input.supersedes.join(' ') } : {}),
+      ...(supersedesBase !== undefined ? { supersedes_base: String(supersedesBase) } : {}),
       ...(input.origin !== undefined ? { origin: input.origin } : {}),
       ...(input.originId !== undefined ? { origin_id: input.originId } : {}),
     },

@@ -233,4 +233,43 @@ version: 1
     expect(upgraded).toContain('v2 body')
     expect(upgraded).toContain('version: 2')
   })
+
+  it('D06: a stale-base revision is isolated as a dispute, not a silent overwrite', () => {
+    const root = tempHub()
+    const target = commitKnowledge(root, { type: 'process', title: 'SOP', summary: 'v1', scope: { level: 'domain', domainId: 'team-ops' }, tags: [], body: 'v1', sourceRefs: ['n'] }, helpers())
+    const proposal = createProposal(root, { type: 'process', title: 'SOP', summary: 'v2 补充', scope: { level: 'domain', domainId: 'team-ops' }, tags: [], body: 'v2 body', sourceRefs: ['s1'], supersedes: [target.id] }, helpers())
+    // The proposal recorded the base version it was written against (v1).
+    const listed = listProposals(root).find((p) => p.id === proposal.id) as NonNullable<ReturnType<typeof listProposals>[number]>
+    expect(listed.frontmatter.extra['supersedes_base']).toBe(1)
+    // Someone ELSE advances the target before approval (concurrent divergence).
+    commitKnowledge(root, { id: target.id, type: 'process', title: 'SOP', summary: 'v2 别人的现场证据', scope: { level: 'domain', domainId: 'team-ops' }, tags: [], body: 'v2 别人的', sourceRefs: ['peer'] }, helpers())
+    const committed = commitProposal(root, listed, helpers(), { channel: 'cli-human' })
+    expect('disputed' in committed && committed.disputed).toBe(true)
+    expect(committed.currentVersion).toBe(2)
+    expect(committed.baseVersion).toBe(1)
+    // Nothing was overwritten: the target keeps the peer's v2.
+    const after = readFileSync(join(root, 'knowledge', 'groups', 'team-ops', 'process', `${target.id}.md`), 'utf8')
+    expect(after).toContain('v2 别人的')
+    expect(after).toContain('version: 2')
+    // The proposal stays in the inbox (isolated, awaiting human review).
+    expect(pendingFiles(root)).toHaveLength(1)
+    // The ledger explains the isolation.
+    const ledgerLines = readFileSync(join(root, 'records', 'ledger.jsonl'), 'utf8').split('\n').filter(Boolean)
+    expect(ledgerLines.some((l) => l.includes('"dispute.raised"') && l.includes(target.id))).toBe(true)
+  })
+
+  it('D06: explicit override commits the stale revision and records the audit', () => {
+    const root = tempHub()
+    const target = commitKnowledge(root, { type: 'process', title: 'SOP', summary: 'v1', scope: { level: 'domain', domainId: 'team-ops' }, tags: [], body: 'v1', sourceRefs: ['n'] }, helpers())
+    const proposal = createProposal(root, { type: 'process', title: 'SOP', summary: 'v2 补充', scope: { level: 'domain', domainId: 'team-ops' }, tags: [], body: 'v2 body', sourceRefs: ['s1'], supersedes: [target.id] }, helpers())
+    const listed = listProposals(root).find((p) => p.id === proposal.id) as NonNullable<ReturnType<typeof listProposals>[number]>
+    commitKnowledge(root, { id: target.id, type: 'process', title: 'SOP', summary: 'v2 别人的', scope: { level: 'domain', domainId: 'team-ops' }, tags: [], body: 'v2 别人的', sourceRefs: ['peer'] }, helpers())
+    const committed = commitProposal(root, listed, helpers(), { channel: 'cli-human', override: true })
+    expect('disputed' in committed && committed.disputed).toBe(false)
+    expect(committed.superseded).toBe(target.id)
+    expect(committed.version).toBe(3)
+    const ledgerLines = readFileSync(join(root, 'records', 'ledger.jsonl'), 'utf8').split('\n').filter(Boolean)
+    expect(ledgerLines.some((l) => l.includes('"dispute.overridden"'))).toBe(true)
+    expect(pendingFiles(root)).toHaveLength(0)
+  })
 })

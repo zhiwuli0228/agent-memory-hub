@@ -36,6 +36,12 @@ describe('initHub', () => {
     expect(gitignore).toContain('records/')
     expect(gitignore).toContain('knowledge-private/')
     expect(gitignore).toContain('hub.yaml')
+    // S1 lesson: pending/ (inbox candidates) and history/ (version snapshots)
+    // are per-hub local state too — a reject/approve that mutates them must
+    // never surface as tracked changes that block the pre-pull rebase.
+    expect(gitignore).toContain('pending/')
+    expect(gitignore).toContain('history/')
+    expect(gitignore).toContain('.writer.lock')
     // Watermarks stay tracked by default (single-machine migration carries them);
     // team repos may ignore them per the migration guide.
     expect(gitignore).not.toContain('extract-state')

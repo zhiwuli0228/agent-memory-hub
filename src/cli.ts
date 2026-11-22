@@ -38,6 +38,7 @@ interface CliArgs {
   full?: boolean
   channel?: string
   note?: string
+  override?: boolean
   port?: number
   open?: boolean
   remote?: string
@@ -185,6 +186,9 @@ function parseArgs(argv: string[]): CliArgs {
       case '--note':
         args.note = argv[i + 1]
         i += 1
+        break
+      case '--override':
+        args.override = true
         break
       case '--port':
         args.port = Number(argv[i + 1])
@@ -432,6 +436,13 @@ export function main(argv: string[]): number {
         if (sub === 'reject') {
           const results = proposalIds.map((pid) => {
             humanLedger(root, { type: 'proposal.rejected', proposalId: pid, note: args.note, at: new Date().toISOString() })
+            // A rejected proposal must leave the inbox — audit-only reject would
+            // leave the file behind and the queue never drains.
+            try {
+              unlinkSync(join(root, 'pending', `${pid}.md`))
+            } catch {
+              // already gone — ledger still records the decision
+            }
             return { rejected: pid }
           })
           out(results.length === 1 ? results[0] : { count: results.length, results }, true)
@@ -442,7 +453,7 @@ export function main(argv: string[]): number {
         const acquired = acquireLock(root)
         if (!acquired.ok) throw new HubError(ErrorCode.E_READONLY, 'another writer holds the lease', { holder: acquired.holder })
         const approved: Array<{ knowledgeId: string; version: number; path: string; git: string | null; proposalId: string }> = []
-        const failed: Array<{ proposalId: string; error: string }> = []
+        const failed: Array<{ proposalId: string; error: string; hint?: string }> = []
         try {
           assertFencing(root, acquired.lock?.token ?? '')
           const proposals = listProposals(root)
@@ -458,7 +469,13 @@ export function main(argv: string[]): number {
               // Single shared approval implementation (store.commitProposal):
               // honors supersedes/origin_id — a revision with the same title
               // bumps the target's version instead of tripping the dedup guard.
-              const committed = commitProposal(root, proposal, { readSequences, writeSequences, appendLedger: humanLedger }, { channel: 'cli-human' })
+              // D06: a revision based on a stale version is isolated as a
+              // dispute (nothing written) unless --override is given.
+              const committed = commitProposal(root, proposal, { readSequences, writeSequences, appendLedger: humanLedger }, { channel: 'cli-human', note: args.note, override: args.override })
+              if ('disputed' in committed && committed.disputed) {
+                failed.push({ proposalId, error: committed.reason, hint: committed.hint })
+                continue
+              }
               // Keep the inbox honest: a committed proposal must leave the
               // pending queue (the serve-panel approve path does this too).
               const gitCommit = autoCommit(root, `approve: ${committed.knowledgeId}@v${committed.version} ${proposal.frontmatter.title}`)

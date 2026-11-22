@@ -506,6 +506,9 @@ function commitFromProposal(state: TransportState, proposalId: string): unknown 
     { readSequences, writeSequences, appendLedger: (root, record) => appendLedger(ledgerPath(root), record) },
     { channel: 'panel' },
   )
+  if ('disputed' in committed && committed.disputed) {
+    throw new HubError(ErrorCode.E_CONFLICT, committed.reason, { hint: committed.hint, targetId: committed.targetId, baseVersion: committed.baseVersion, currentVersion: committed.currentVersion })
+  }
   state.index = buildIndex(state.hubRoot, () => new Date().toISOString())
   state.metrics = emptyMetrics(state.index)
   return { knowledgeId: committed.knowledgeId, version: committed.version, path: committed.path }

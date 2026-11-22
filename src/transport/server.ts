@@ -93,14 +93,19 @@ function withWriteLock<T>(hubRoot: string, fn: () => T): T {
   }
 }
 
-function commitOne(hubRoot: string, proposalId: string, note?: string): { knowledgeId: string; version: number; superseded?: string; git: { committed: boolean; detail?: string } } {
+function commitOne(hubRoot: string, proposalId: string, note?: string, override = false): { knowledgeId: string; version: number; superseded?: string; git: { committed: boolean; detail?: string } } {
   const proposal = listProposals(hubRoot).find((p) => p.id === proposalId)
   if (proposal === undefined) {
     throw new HubError(ErrorCode.E_NOT_FOUND, `pending proposal not found: ${proposalId}`, { proposalId })
   }
   // One shared approval implementation for every surface (store.commitProposal):
   // origin_id upsert (central side) / supersedes re-extraction, both version-bump.
-  const committed = commitProposal(hubRoot, proposal, { readSequences, writeSequences, appendLedger: (root, record) => appendLedger(ledgerPath(root), record) }, { channel: 'panel', note })
+  // D06: a stale-base revision is isolated as a dispute unless the caller
+  // explicitly overrides (the panel asks for confirmation first).
+  const committed = commitProposal(hubRoot, proposal, { readSequences, writeSequences, appendLedger: (root, record) => appendLedger(ledgerPath(root), record) }, { channel: 'panel', note, override })
+  if ('disputed' in committed && committed.disputed) {
+    throw new HubError(ErrorCode.E_CONFLICT, committed.reason, { hint: committed.hint, targetId: committed.targetId, baseVersion: committed.baseVersion, currentVersion: committed.currentVersion })
+  }
   const gitCommit = autoCommit(hubRoot, `approve: ${committed.knowledgeId}@v${committed.version} ${proposal.frontmatter.title}`)
   return { knowledgeId: committed.knowledgeId, version: committed.version, ...(committed.superseded !== undefined ? { superseded: committed.superseded } : {}), git: gitCommit }
 }
@@ -382,12 +387,13 @@ function approve(state: ApiState, ids: string[], body?: Record<string, unknown>)
     }
   }
   const note = typeof body?.['note'] === 'string' ? body['note'] : undefined
+  const override = body?.['override'] === true
   return withWriteLock(state.hubRoot, () => {
     const results: Array<{ proposalId: string; knowledgeId?: string; version?: number; superseded?: string; git?: { committed: boolean; detail?: string }; error?: string }> = []
     let firstError: HubError | null = null
     for (const id of ids) {
       try {
-        const committed = commitOne(state.hubRoot, id, note)
+        const committed = commitOne(state.hubRoot, id, note, override)
         results.push({ proposalId: id, knowledgeId: committed.knowledgeId, version: committed.version, ...(committed.superseded !== undefined ? { superseded: committed.superseded } : {}), git: committed.git })
       } catch (error) {
         if (error instanceof HubError && firstError === null) firstError = error
