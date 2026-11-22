@@ -55,6 +55,7 @@ export { appendLedger, ledgerPath, readLedger, readSequences, writeSequences } f
 // Store
 export {
   commitKnowledge,
+  commitProposal,
   createProposal,
   deprecateEntry,
   hardDeleteEntry,

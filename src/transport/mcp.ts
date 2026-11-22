@@ -230,10 +230,12 @@ export const TOOLS: Record<string, ToolDef> = {
           },
         )
         registerWorkspaceIfNew(state)
+        const pendingCount = listProposals(state.hubRoot).length
         return {
           proposalId: proposal.id,
           path: proposal.path,
           scope: team !== undefined && team !== '' ? `team:${team}` : 'project:current-workspace',
+          pendingCount,
           nextStep: 'human approval via panel or `memhub inbox approve`',
         }
       }),
@@ -300,7 +302,16 @@ export const TOOLS: Record<string, ToolDef> = {
         note: typeof args['note'] === 'string' ? args['note'] : undefined,
         at: new Date().toISOString(),
       })
-      return { closed: true }
+      // Approval reminder: the model is about to end the turn — if humans
+      // still have proposals waiting, surface it so the model tells them.
+      const pendingCount = listProposals(state.hubRoot).length
+      return {
+        closed: true,
+        pendingCount,
+        ...(pendingCount > 0
+          ? { hint: `还有 ${pendingCount} 条提案待人工审批：memhub inbox list（面板 127.0.0.1:7777 的收件箱也可审）` }
+          : {}),
+      }
     },
   },
   memory_duplicates: {

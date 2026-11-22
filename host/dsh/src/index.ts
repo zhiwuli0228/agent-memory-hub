@@ -138,12 +138,22 @@ export function apply(ctx: HostContext, config?: AdapterConfig): void {
               } catch {
                 // not a git hub or git missing — skip the line silently
               }
+              // Approval reminder (S2 gap from the S1 pilot): pending proposals
+              // need a human — surface the count every session start so the
+              // model actively tells the user when review is owed.
+              let pendingLine = ''
+              try {
+                const pendingCount = hub.listProposals(hubCtx.root).length
+                if (pendingCount > 0) pendingLine = `待审批 ${pendingCount} 条提案（memhub inbox list 查看；面板 127.0.0.1:7777 也可审）\n`
+              } catch {
+                // hub read failed — keep the snapshot going without the line
+              }
               const pack = hub.preflight(hubCtx.index, hubCtx.root, hubCtx.workspace.workspaceId, intent, {
                 teamId: process.env['MEMHUB_TEAM'],
               })
               const hits = pack.hits ?? []
               const lines = hits.map((hit: { id: string; title: string; abstract?: string }) => `- ${hit.id} ${hit.title}${hit.abstract ? `：${hit.abstract}` : ''}`)
-              lastText = `${liveness}` + (lines.length === 0
+              lastText = `${liveness}${pendingLine}` + (lines.length === 0
                 ? '（记忆中枢：本意图暂无命中。会话收尾时若有可沉淀知识，用 memory_propose 提交、memory_close_task 关闭任务——有实质 note 的 close 会自动生成待审提案。）'
                 : `【记忆中枢快照 · 意图：${intent}】开始工作前可参考：\n${lines.join('\n')}\n（详情用 memory_get；标 key: true 的条目会永远伴随注入。会话收尾时用 memory_propose 提交新知识、memory_close_task 关闭任务——有实质 note 的 close 自动生成待审提案。）`)
             } catch (error) {

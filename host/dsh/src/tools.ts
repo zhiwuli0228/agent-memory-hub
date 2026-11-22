@@ -242,7 +242,7 @@ export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (arg
             appendLedger: (root, record) => hub.appendLedger(hub.ledgerPath(root), record),
           },
         )
-        return { proposalId: proposal.id, path: proposal.path, scope: team !== undefined && team !== '' ? `team:${team}` : 'project:current-workspace', nextStep: 'human approval via panel or `memhub inbox approve`' }
+        return { proposalId: proposal.id, path: proposal.path, scope: team !== undefined && team !== '' ? `team:${team}` : 'project:current-workspace', pendingCount: hub.listProposals(ctx.root).length, nextStep: 'human approval via panel or `memhub inbox approve`' }
       } finally {
         hub.releaseLock(ctx.root, token)
       }
@@ -315,12 +315,15 @@ export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (arg
             actor: process.env['MEMHUB_USER'] ?? 'session-close',
             sourceRefs: ['task.closed'],
           }, helpers)
-          return { closed: true, proposal: proposal.id, hint: '面板 inbox 审批后入库' }
+          const pendingCount = hub.listProposals(ctx.root).length
+          return { closed: true, proposal: proposal.id, pendingCount, hint: `面板 inbox 审批后入库；另有 ${pendingCount - 1} 条待审` }
         } catch {
           // duplicate title / validation — the note is still recorded above
         }
       }
-      return { closed: true }
+      // Approval reminder: surface the waiting count so the model tells the user.
+      const pendingCount = hub.listProposals(ctx.root).length
+      return { closed: true, pendingCount, ...(pendingCount > 0 ? { hint: `还有 ${pendingCount} 条提案待人工审批（memhub inbox list 查看）` } : {}) }
     },
   })
 

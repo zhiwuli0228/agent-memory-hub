@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -11,11 +11,14 @@ interface RegisteredHost {
   ctx: HostContext
   tools: Map<string, ToolDefinition>
   logs: string[]
+  renderSnapshot(): string
 }
 
 function mockHost(): RegisteredHost {
   const tools = new Map<string, ToolDefinition>()
   const logs: string[] = []
+  type SnapshotText = (context: { agent?: { session?: { header?: { cwd?: string } } } }) => string
+  let promptText: SnapshotText | undefined
   const ctx: HostContext = {
     tools: {
       get: (toolName) => tools.get(toolName),
@@ -31,8 +34,24 @@ function mockHost(): RegisteredHost {
     effect: (dispose) => {
       void dispose
     },
+    systemPrompt: {
+      context: (options) => {
+        promptText = options.text
+        return () => {
+          promptText = undefined
+        }
+      },
+    },
   }
-  return { ctx, tools, logs }
+  return {
+    ctx,
+    tools,
+    logs,
+    renderSnapshot: () => {
+      if (promptText === undefined) throw new Error('snapshot text provider not registered')
+      return promptText({ agent: { session: { header: { cwd: process.cwd() } } } })
+    },
+  }
 }
 
 function seededRoot(): string {
@@ -129,12 +148,60 @@ describe('DSH adapter registration', () => {
       summary: '薄包转发 core',
       body: '正文',
       sourceRefs: ['note:adapter'],
-    })) as { proposalId?: string; error?: string }
+    })) as { proposalId?: string; pendingCount?: number; error?: string }
     expect(result.proposalId).toBe('PRO-000001')
+    expect(result.pendingCount).toBe(1)
     const search = tools.find((tool) => tool.name === 'memory_search')
     const hits = (await search!.run({ query: '适配器' })) as { hits: unknown[] }
     // Proposals are pending, not searchable — correct.
     expect(hits.hits).toHaveLength(0)
+  })
+
+  it('approval reminder: close_task surfaces the pending count + hint', async () => {
+    const root = seededRoot()
+    process.chdir(root)
+    const hubCtx = createHubContext({ root })
+    const tools = createTools(hubCtx)
+    const run = async (name: string, args: Record<string, unknown> = {}) => {
+      const tool = tools.find((candidate) => candidate.name === name)!
+      return (await tool.run(args)) as Record<string, unknown>
+    }
+    await run('memory_propose', { type: 'knowledge', title: '待审条目', summary: '等待人工', body: '正文', sourceRefs: ['n'] })
+    const closed = await run('memory_close_task', { assessment: 'deferred' })
+    expect(closed.pendingCount).toBe(1)
+    expect(String(closed.hint ?? '')).toContain('待人工审批')
+    // Once a human approves (the host has no memory_commit — fail-closed), the
+    // reminder goes quiet.
+    const { listProposals, commitProposal } = await import('agent-memory-hub')
+    const proposal = listProposals(root).find((p) => p.id === 'PRO-000001')!
+    const committed = commitProposal(root, proposal, {
+      readSequences: (r) => JSON.parse(readFileSync(join(r, 'records', 'sequences.json'), 'utf8')),
+      writeSequences: (r, seq) => writeFileSync(join(r, 'records', 'sequences.json'), JSON.stringify(seq)),
+      appendLedger: (r, rec) => appendFileSync(join(r, 'records', 'ledger.jsonl'), `${JSON.stringify(rec)}\n`),
+    }, { channel: 'panel' })
+    if ('disputed' in committed && committed.disputed) throw new Error('unexpected dispute')
+    expect(committed.knowledgeId).toBe('KNO-000001')
+    const closed2 = await run('memory_close_task', { assessment: 'no_new_knowledge' })
+    expect(closed2.pendingCount).toBe(0)
+  })
+
+  it('approval reminder: the session snapshot lists the waiting proposal count', () => {
+    const root = seededRoot()
+    process.chdir(root)
+    const host = mockHost()
+    apply(host.ctx, { root })
+    // No pending proposals yet: the snapshot must not nag.
+    expect(host.renderSnapshot()).not.toContain('待审批')
+    const hubCtx = createHubContext({ root })
+    const tools = createTools(hubCtx)
+    const propose = tools.find((tool) => tool.name === 'memory_propose')!
+    void propose.run({ type: 'knowledge', title: '快照待审条目', summary: 's', body: 'b', sourceRefs: ['n'] })
+    // Throttle is 30s; force a fresh render by waiting? No — text is computed
+    // lazily per call, but lastText caches. Reset by using a fresh host.
+    const host2 = mockHost()
+    apply(host2.ctx, { root })
+    const snapshot = host2.renderSnapshot()
+    expect(snapshot).toContain('待审批 1 条提案')
   })
 
   it('search shell finds committed entries and preflight records the event', async () => {

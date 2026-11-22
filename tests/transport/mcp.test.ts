@@ -84,8 +84,9 @@ describe('MCP tools (fail-closed approval gate)', () => {
       sourceRefs: ['file:docs/04-development/search-replay-2026-11-15.md'],
     })
     expect(result.isError).toBeFalsy()
-    const parsed = JSON.parse(result.text) as { proposalId: string }
+    const parsed = JSON.parse(result.text) as { proposalId: string; pendingCount: number }
     expect(parsed.proposalId).toBe('PRO-000001')
+    expect(parsed.pendingCount).toBe(1)
     const config = readLedger(ledgerPath(state.hubRoot))
     expect(config[0]?.action).toBe('propose')
   })
@@ -188,9 +189,21 @@ describe('MCP tools (fail-closed approval gate)', () => {
     expect(cited.isError).toBeFalsy()
     const closed = call(state, 'memory_close_task', { assessment: 'no_new_knowledge' })
     expect(closed.isError).toBeFalsy()
+    // Approval reminder: no pending proposals left after the commit.
+    const closedParsed = JSON.parse(closed.text) as { pendingCount: number; hint?: string }
+    expect(closedParsed.pendingCount).toBe(0)
+    expect(closedParsed.hint).toBeUndefined()
     const ledger = readLedger(ledgerPath(state.hubRoot))
     expect(ledger.some((r) => r['type'] === 'citation.added')).toBe(true)
     expect(ledger.some((r) => r['type'] === 'task.closed')).toBe(true)
+  })
+
+  it('memory_close_task reminds about proposals still awaiting approval', () => {
+    const state = seededState()
+    call(state, 'memory_propose', { type: 'knowledge', title: '待审提醒条目', summary: 's', body: 'b' })
+    const closed = JSON.parse(call(state, 'memory_close_task', { assessment: 'deferred' }).text) as { pendingCount: number; hint?: string }
+    expect(closed.pendingCount).toBe(1)
+    expect(closed.hint).toContain('待人工审批')
   })
 
   it('memory_get and memory_duplicates round-trip', () => {
