@@ -54,4 +54,7 @@ project 层：团队知识不可检索、不可提交，个人私有记忆无法
   一旦被提交进共享历史，获取/释放锁都会造成 tracked 变更并卡死同步前的 rebase。
 - 审批实现只允许一份（`store.commitProposal`）：CLI / 面板 / MCP 三面共享，
   `supersedes`/`origin_id` 语义一致，同标题修订原地升版本而非触发去重守卫。
+- 审批提示（v0.1.41）：待审提案需要人工——`memory_propose`/`memory_close_task`
+  返回 `pendingCount` + 提示；DSH 会话快照注入"待审批 N 条提案"行（仅 >0 时），
+  模型收尾时会主动转达人类，inbox 不再静默积压。
 
