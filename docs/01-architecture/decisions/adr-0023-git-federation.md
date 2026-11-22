@@ -40,3 +40,18 @@
 
 - 软删条目的 title 缓存行随目录 mtime 失效前可能残留（低频、报错明确、自愈）。
 - 中央 serve（ADR-0018）保留为**可选的实时检索通道**；git 联邦是零常驻默认。
+
+## 修订：宿主面团队/私人语义（2026-11-22，S1 试点后）
+
+S1 试点（`docs/04-development/s1-pilot-2026-11-22.md`）发现 MCP 面最初只暴露
+project 层：团队知识不可检索、不可提交，个人私有记忆无法由宿主生成。修订：
+
+- `memory_search` / `memory_propose` 增加 `team` 参数（缺省读 `MEMHUB_TEAM`）：
+  检索可显式看到团队层；提案落 `scope: domain/<teamId>`，**仍走人工审批**才入 knowledge/。
+- `memory_propose { private: true }` **直写** `knowledge-private/`（个人层按人划分、
+  不去重、永不外流，故不设团队审批门）；这是"记忆及时生成"的宿主通路。
+- `.writer.lock` 是根级 per-hub 本地状态，必须在 init 的 `.gitignore` 模板里忽略——
+  一旦被提交进共享历史，获取/释放锁都会造成 tracked 变更并卡死同步前的 rebase。
+- 审批实现只允许一份（`store.commitProposal`）：CLI / 面板 / MCP 三面共享，
+  `supersedes`/`origin_id` 语义一致，同标题修订原地升版本而非触发去重守卫。
+

@@ -11,7 +11,7 @@ import { appendLedger, ledgerPath, readLedger, readSequences, writeSequences } f
 import { acquireLock, assertFencing, lockInfo, releaseLock } from './core/lock.js'
 import { registerWorkspace, resolveWorkspace } from './core/registry.js'
 import { buildIndex, emptyMetrics, search } from './core/search.js'
-import { commitKnowledge, getEntry, listEntries, listProposals } from './core/store.js'
+import { commitKnowledge, commitProposal, getEntry, listEntries, listProposals } from './core/store.js'
 import { splitFrontmatter } from './core/frontmatter.js'
 import { analyzeCurate } from './core/curate.js'
 import { validateHub } from './core/validate.js'
@@ -455,29 +455,14 @@ export function main(argv: string[]): number {
               })
               const proposal = proposals.find((p) => p.id === proposalId)
               if (proposal === undefined) throw new HubError(ErrorCode.E_NOT_FOUND, `pending proposal not found: ${proposalId}`)
-              const committed = commitKnowledge(
-                root,
-                {
-                  type: proposal.frontmatter.type,
-                  title: proposal.frontmatter.title,
-                  summary: proposal.frontmatter.summary,
-                  scope: proposal.frontmatter.scope,
-                  tags: proposal.frontmatter.tags,
-                  body: splitFrontmatter(readFileSync(proposal.path, 'utf8'))?.body ?? '',
-                  actor: 'cli-human',
-                },
-                { readSequences, writeSequences, appendLedger: humanLedger },
-              )
-              humanLedger(root, { type: 'proposal.committed', proposalId, knowledgeId: committed.id, channel: 'cli-human', at: new Date().toISOString() })
+              // Single shared approval implementation (store.commitProposal):
+              // honors supersedes/origin_id — a revision with the same title
+              // bumps the target's version instead of tripping the dedup guard.
+              const committed = commitProposal(root, proposal, { readSequences, writeSequences, appendLedger: humanLedger }, { channel: 'cli-human' })
               // Keep the inbox honest: a committed proposal must leave the
               // pending queue (the serve-panel approve path does this too).
-              try {
-                unlinkSync(proposal.path)
-              } catch {
-                // already gone — fine
-              }
-              const gitCommit = autoCommit(root, `approve: ${committed.id}@v${committed.version} ${proposal.frontmatter.title}`)
-              approved.push({ proposalId, knowledgeId: committed.id, version: committed.version, path: committed.path, git: gitCommit.committed ? `committed${gitCommit.detail ? ': ' + gitCommit.detail : ''}` : 'skipped (not a git repo)' })
+              const gitCommit = autoCommit(root, `approve: ${committed.knowledgeId}@v${committed.version} ${proposal.frontmatter.title}`)
+              approved.push({ proposalId, knowledgeId: committed.knowledgeId, version: committed.version, path: committed.path, git: gitCommit.committed ? `committed${gitCommit.detail ? ': ' + gitCommit.detail : ''}` : 'skipped (not a git repo)' })
             } catch (error) {
               failed.push({ proposalId, error: error instanceof Error ? error.message : String(error) })
             }

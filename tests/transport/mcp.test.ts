@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -129,6 +129,55 @@ describe('MCP tools (fail-closed approval gate)', () => {
     expect(parsed.hits).toHaveLength(1)
     expect(parsed.hits[0]?.title).toContain('写锁租约')
     expect(parsed.metrics.queryCount).toBe(1)
+  })
+
+  it('memory_search without team cannot see team-layer knowledge (S1)', () => {
+    const state = seededState()
+    call(state, 'memory_propose', {
+      type: 'process',
+      title: 'API 网关 502 排障 SOP',
+      summary: '网关错误七步排查。',
+      body: '健康检查 → 网关日志 → 超时 → 限流 → 回滚 → 证书 → 升级。',
+      team: 'team-ops',
+      sourceRefs: ['s1'],
+    })
+    // The proposal itself carries the team scope (no silent project fallback).
+    const pendingFile = readFileSync(join(state.hubRoot, 'pending', 'PRO-000001.md'), 'utf8')
+    expect(pendingFile).toContain('domainId: team-ops')
+    call(state, 'memory_commit', { proposalId: 'PRO-000001', channel: 'panel' })
+    // Without team the domain layer is invisible — no silent cross-team leak.
+    const blind = JSON.parse(call(state, 'memory_search', { query: '502 排障' }).text) as { hits: Array<{ id: string }> }
+    expect(blind.hits).toHaveLength(0)
+    // With team=team-ops the same query finds it.
+    const inTeam = JSON.parse(call(state, 'memory_search', { query: '502 排障', team: 'team-ops' }).text) as { hits: Array<{ id: string }> }
+    expect(inTeam.hits).toHaveLength(1)
+    expect(inTeam.hits[0]?.id).toBe('PRC-000001')
+    // Another team still sees nothing.
+    const otherTeam = JSON.parse(call(state, 'memory_search', { query: '502 排障', team: 'team-frontend' }).text) as { hits: Array<{ id: string }> }
+    expect(otherTeam.hits).toHaveLength(0)
+  })
+
+  it('memory_propose private:true writes straight into the personal tier (no inbox round-trip)', () => {
+    const state = seededState()
+    const result = call(state, 'memory_propose', {
+      type: 'knowledge',
+      title: '私有排障笔记',
+      summary: '仅本人可见',
+      body: 'NMT 定位到 Netty 直缓冲未释放。',
+      private: true,
+      sourceRefs: ['s1'],
+    })
+    expect(result.isError).toBeFalsy()
+    const parsed = JSON.parse(result.text) as { knowledgeId: string; scope: string; path: string }
+    expect(parsed.scope).toBe('private')
+    expect(parsed.knowledgeId).toMatch(/^KNO-/)
+    // The entry lives in knowledge-private/ and never touches the inbox.
+    expect(parsed.path).toContain('knowledge-private')
+    const inbox = JSON.parse(call(state, 'memory_status', {}).text) as { proposals: number }
+    expect(inbox.proposals).toBe(0)
+    // And it is searchable for its owner (private = owner's index only).
+    const hits = JSON.parse(call(state, 'memory_search', { query: '排障 笔记' }).text) as { hits: Array<{ id: string }> }
+    expect(hits.hits.map((h) => h.id)).toContain(parsed.knowledgeId)
   })
 
   it('memory_cite and memory_close_task append audit records', () => {

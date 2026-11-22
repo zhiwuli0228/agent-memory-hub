@@ -1,10 +1,10 @@
-import { readFileSync, unlinkSync, appendFileSync, existsSync } from 'node:fs'
+import { unlinkSync, appendFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { ErrorCode, HubError } from '../core/errors.js'
 import { readHubConfig } from '../core/hub.js'
 import { appendLedger, ledgerPath, readSequences, writeSequences } from '../core/ledger.js'
 import { acquireLock, assertFencing, lockInfo, releaseLock } from '../core/lock.js'
-import { commitKnowledge, createProposal, deprecateEntry, getEntry, hardDeleteEntry, listEntries, listProposals } from '../core/store.js'
+import { commitKnowledge, commitProposal, createProposal, deprecateEntry, getEntry, hardDeleteEntry, listEntries, listProposals } from '../core/store.js'
 import { buildIndex, emptyMetrics, search, type SearchIndex, type SearchMetrics } from '../core/search.js'
 
 /**
@@ -30,7 +30,6 @@ function analyzeIntakeDuplicates(root: string, title: string, originId?: string)
 }
 import { registerWorkspace, resolveWorkspace, type ResolvedWorkspace } from '../core/registry.js'
 import { readJournal } from '../core/journal.js'
-import { splitFrontmatter } from '../core/frontmatter.js'
 import { readLedger } from '../core/ledger.js'
 import { autoCommit } from './autocommit.js'
 import type { KnowledgeScope, KnowledgeType } from '../core/types.js'
@@ -99,51 +98,11 @@ function commitOne(hubRoot: string, proposalId: string, note?: string): { knowle
   if (proposal === undefined) {
     throw new HubError(ErrorCode.E_NOT_FOUND, `pending proposal not found: ${proposalId}`, { proposalId })
   }
-  // Target selection (ADR-0012): a proposal carrying origin_id upserts that
-  // entry in place (create with the same id when the central hub has never
-  // seen it; version bump when it has). A legacy `supersedes` still works
-  // for local re-extraction proposals, and requires the target to exist.
-  const rawOriginId = proposal.frontmatter.extra['origin_id']
-  const originId = typeof rawOriginId === 'string' && rawOriginId !== '' && rawOriginId !== '[]' ? rawOriginId : undefined
-  const rawSupersedes = proposal.frontmatter.extra['supersedes']
-  const supersedesTarget = typeof rawSupersedes === 'string' && rawSupersedes !== '' && rawSupersedes !== '[]' ? rawSupersedes.split(/\s+/)[0] : undefined
-  const targetId = originId ?? supersedesTarget
-  const superseding = targetId !== undefined && (originId !== undefined || existsSyncSafe(hubRoot, targetId))
-  const committed = commitKnowledge(
-    hubRoot,
-    {
-      ...(superseding ? { id: targetId } : {}),
-      type: proposal.frontmatter.type,
-      title: proposal.frontmatter.title,
-      summary: proposal.frontmatter.summary,
-      scope: proposal.frontmatter.scope,
-      tags: proposal.frontmatter.tags,
-      body: splitFrontmatter(readFileSync(proposal.path, 'utf8'))?.body ?? '',
-      actor: 'panel',
-    },
-    { readSequences, writeSequences, appendLedger: (root, record) => appendLedger(ledgerPath(root), record) },
-  )
-  unlinkSync(proposal.path)
-  appendLedger(ledgerPath(hubRoot), {
-    type: 'proposal.committed',
-    proposalId,
-    knowledgeId: committed.id,
-    ...(superseding ? { supersedes: targetId } : {}),
-    channel: 'panel',
-    note,
-    at: new Date().toISOString(),
-  })
-  const gitCommit = autoCommit(hubRoot, `approve: ${committed.id}@v${committed.version} ${proposal.frontmatter.title}`)
-  return { knowledgeId: committed.id, version: committed.version, ...(superseding ? { superseded: targetId } : {}), git: gitCommit }
-}
-
-function existsSyncSafe(hubRoot: string, id: string): boolean {
-  try {
-    getEntry(hubRoot, id)
-    return true
-  } catch {
-    return false
-  }
+  // One shared approval implementation for every surface (store.commitProposal):
+  // origin_id upsert (central side) / supersedes re-extraction, both version-bump.
+  const committed = commitProposal(hubRoot, proposal, { readSequences, writeSequences, appendLedger: (root, record) => appendLedger(ledgerPath(root), record) }, { channel: 'panel', note })
+  const gitCommit = autoCommit(hubRoot, `approve: ${committed.knowledgeId}@v${committed.version} ${proposal.frontmatter.title}`)
+  return { knowledgeId: committed.knowledgeId, version: committed.version, ...(committed.superseded !== undefined ? { superseded: committed.superseded } : {}), git: gitCommit }
 }
 
 /** Route one API request. `body` is the parsed JSON body or undefined. */

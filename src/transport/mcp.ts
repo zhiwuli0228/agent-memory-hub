@@ -26,13 +26,13 @@ import {
 } from '../core/search.js'
 import {
   commitKnowledge,
+  commitProposal,
   createProposal,
   findTitleConflict,
   getEntry,
   listProposals,
 } from '../core/store.js'
 import { requireApproval, type ApprovalChannel } from '../core/approval.js'
-import { splitFrontmatter } from '../core/frontmatter.js'
 import { preflight } from '../core/inject.js'
 import { appendJournal, readJournal } from '../core/journal.js'
 import { detectDejaVu, indexTranscript, readTranscriptIndex } from '../core/transcript.js'
@@ -82,11 +82,12 @@ interface ToolDef {
 export const TOOLS: Record<string, ToolDef> = {
   memory_search: {
     description:
-      'Search accepted knowledge by keywords or a natural-language intent. Scope-filtered: the workspace sees itself + global. Ranked results; default detail (L1) returns summaries — pass detail=L2 only when the full body is needed.',
+      'Search accepted knowledge by keywords or a natural-language intent. Scope-filtered: the workspace sees itself + global; pass team=<teamId> (or set MEMHUB_TEAM) to see that team/domain layer. Ranked results; default detail (L1) returns summaries — pass detail=L2 only when the full body is needed.',
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string' },
+        team: { type: 'string', description: 'Team/domain id — without it, team-layer knowledge is invisible to search' },
         detail: { type: 'string', enum: ['L0', 'L1', 'L2'] },
         limit: { type: 'number' },
         minScore: { type: 'number' },
@@ -97,6 +98,7 @@ export const TOOLS: Record<string, ToolDef> = {
     handler: (state, args) => {
       const hits = searchWithMetrics(state.index, state.metrics, String(args['query']), {
         workspaceId: state.workspace.workspaceId,
+        teamId: (args['team'] as string | undefined) ?? process.env['MEMHUB_TEAM'],
         detail: (args['detail'] as 'L0' | 'L1' | 'L2' | undefined) ?? 'L1',
         limit: typeof args['limit'] === 'number' ? args['limit'] : undefined,
         minScore: typeof args['minScore'] === 'number' ? args['minScore'] : 0,
@@ -152,7 +154,7 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   memory_propose: {
     description:
-      'Create a pending candidate (pending/PRO-*.md). This NEVER writes knowledge/ directly — a human must approve via the panel or `memhub inbox`. Always include sourceRefs evidence. To RE-EXTRACT an existing entry (e.g. generalize an environment-specific flow), pass supersedes: [entryId] — approval upgrades that entry\'s version instead of creating a duplicate.',
+      'Create a pending candidate (pending/PRO-*.md). This NEVER writes knowledge/ directly — a human must approve via the panel or `memhub inbox`. Always include sourceRefs evidence. To RE-EXTRACT an existing entry (e.g. generalize an environment-specific flow), pass supersedes: [entryId] — approval upgrades that entry\'s version instead of creating a duplicate. Pass team=<teamId> to propose into that team/domain layer (still human-approved before it lands). Pass private: true to write straight into the personal tier (knowledge-private/ — never leaves the hub, no team approval).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -165,6 +167,8 @@ export const TOOLS: Record<string, ToolDef> = {
         tags: { type: 'array', items: { type: 'string' } },
         body: { type: 'string' },
         sourceRefs: { type: 'array', items: { type: 'string' } },
+        team: { type: 'string', description: 'Team/domain id to propose into (else the current project workspace layer).' },
+        private: { type: 'boolean', description: 'true = write straight into the personal private tier (knowledge-private/, never leaves the hub, no team approval).' },
         supersedes: { type: 'array', items: { type: 'string' }, description: 'Entry id(s) this proposal re-extracts; approval upgrades their version.' },
       },
       required: ['type', 'title', 'summary', 'body'],
@@ -172,13 +176,47 @@ export const TOOLS: Record<string, ToolDef> = {
     handler: (state, args) =>
       withWriteLock(state, () => {
         const supersedes = args['supersedes'] as string[] | undefined
+        const team = (args['team'] as string | undefined) ?? process.env['MEMHUB_TEAM']
+        const isPrivate = args['private'] === true
+        // ADR-0023 personal tier: private memory is per-person, never leaves
+        // the hub (push filters it out) and needs no TEAM approval — the
+        // predecessor's "memory generated right when the task ends" depends
+        // on this being a direct write, not an inbox round-trip.
+        if (isPrivate) {
+          const committed = commitKnowledge(
+            state.hubRoot,
+            {
+              type: args['type'] as KnowledgeType,
+              title: String(args['title']),
+              summary: String(args['summary']),
+              scope: { level: 'private' },
+              tags: args['tags'] as string[] | undefined,
+              body: String(args['body']),
+              sourceRefs: (args['sourceRefs'] as string[] | undefined) ?? [],
+              actor: 'model',
+            },
+            {
+              readSequences,
+              writeSequences,
+              appendLedger: (root, record) => appendLedger(ledgerPath(root), record),
+            },
+          )
+          state.index = buildIndex(state.hubRoot, () => new Date().toISOString())
+          state.metrics = emptyMetrics(state.index)
+          return {
+            knowledgeId: committed.id,
+            path: committed.path,
+            scope: 'private',
+            note: '已直写个人私有层（knowledge-private/，永不外流，无需团队审批）',
+          }
+        }
         const proposal = createProposal(
           state.hubRoot,
           {
             type: args['type'] as KnowledgeType,
             title: String(args['title']),
             summary: String(args['summary']),
-            scope: scopeFor(state.workspace),
+            scope: team !== undefined && team !== '' ? { level: 'domain', domainId: team } : scopeFor(state.workspace),
             tags: args['tags'] as string[] | undefined,
             body: String(args['body']),
             sourceRefs: (args['sourceRefs'] as string[] | undefined) ?? [],
@@ -195,6 +233,7 @@ export const TOOLS: Record<string, ToolDef> = {
         return {
           proposalId: proposal.id,
           path: proposal.path,
+          scope: team !== undefined && team !== '' ? `team:${team}` : 'project:current-workspace',
           nextStep: 'human approval via panel or `memhub inbox approve`',
         }
       }),
@@ -460,34 +499,16 @@ function commitFromProposal(state: TransportState, proposalId: string): unknown 
   if (proposal === undefined) {
     throw new HubError(ErrorCode.E_NOT_FOUND, `pending proposal not found: ${proposalId}`, { proposalId })
   }
-  const committed = commitKnowledge(
+  // One shared approval implementation for every surface (store.commitProposal).
+  const committed = commitProposal(
     state.hubRoot,
-    {
-      type: proposal.frontmatter.type,
-      title: proposal.frontmatter.title,
-      summary: proposal.frontmatter.summary,
-      scope: proposal.frontmatter.scope,
-      tags: proposal.frontmatter.tags,
-      body: splitFrontmatter(readFileSync(proposal.path, 'utf8'))?.body ?? '',
-      actor: 'panel',
-    },
-    {
-      readSequences,
-      writeSequences,
-      appendLedger: (root, record) => appendLedger(ledgerPath(root), record),
-    },
+    proposal,
+    { readSequences, writeSequences, appendLedger: (root, record) => appendLedger(ledgerPath(root), record) },
+    { channel: 'panel' },
   )
-  unlinkSync(proposal.path)
-  appendLedger(ledgerPath(state.hubRoot), {
-    type: 'proposal.committed',
-    proposalId,
-    knowledgeId: committed.id,
-    channel: 'panel',
-    at: new Date().toISOString(),
-  })
   state.index = buildIndex(state.hubRoot, () => new Date().toISOString())
   state.metrics = emptyMetrics(state.index)
-  return { knowledgeId: committed.id, version: committed.version, path: committed.path }
+  return { knowledgeId: committed.knowledgeId, version: committed.version, path: committed.path }
 }
 
 export function heartbeat(state: TransportState): boolean {

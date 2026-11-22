@@ -1,11 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { atomicWrite } from './atomic.js'
 import { ErrorCode, HubError } from './errors.js'
 import { historyDir, knowledgeDir, pendingDir } from './hub.js'
 import { nextKnowledgeId, nextProposalId } from './ids.js'
 import { parseIso, nowIso } from './time.js'
-import { parseKnowledgeFile, parseKnowledgeFrontmatter } from './frontmatter.js'
+import { parseKnowledgeFile, parseKnowledgeFrontmatter, splitFrontmatter } from './frontmatter.js'
 import type { LedgerRecord } from './ledger.js'
 import type {
   KnowledgeFrontmatter,
@@ -348,6 +348,77 @@ export function commitKnowledge(
     source_refs: input.sourceRefs,
   })
   return { id: prevFm.id, version: fm.version, path: previous.path }
+}
+
+/**
+ * Commit one pending proposal through the human-approval gate. THE single
+ * implementation behind every approval surface (CLI `memhub inbox approve`,
+ * serve-panel HTTP API, MCP commit tool) — S1 pilot found the CLI path had
+ * its own copy that ignored `supersedes`, so a revision with the same title
+ * was rejected by the dedup guard instead of bumping the target's version.
+ *
+ * Target selection (ADR-0012): `origin_id` = cross-hub upsert target (a
+ * pushed entry applied on the central hub — create-as-id or version bump);
+ * `supersedes` = local re-extraction target (requires it to exist). Either
+ * keeps entry identity stable: never a duplicate.
+ */
+export function commitProposal(
+  root: string,
+  proposal: { id: string; path: string; frontmatter: KnowledgeFrontmatter },
+  helpers: {
+    readSequences: (root: string) => Record<string, number>
+    writeSequences: (root: string, seq: Record<string, number>) => void
+    appendLedger: (root: string, record: LedgerRecord) => void
+  },
+  opts?: { channel?: string; note?: string },
+): { knowledgeId: string; version: number; path: string; superseded?: string } {
+  const rawOriginId = proposal.frontmatter.extra['origin_id']
+  const originId = typeof rawOriginId === 'string' && rawOriginId !== '' && rawOriginId !== '[]' ? rawOriginId : undefined
+  const rawSupersedes = proposal.frontmatter.extra['supersedes']
+  const supersedesTarget =
+    typeof rawSupersedes === 'string' && rawSupersedes !== '' && rawSupersedes !== '[]'
+      ? rawSupersedes.split(/\s+/)[0]
+      : undefined
+  const targetId = originId ?? supersedesTarget
+  let targetExists = false
+  if (targetId !== undefined && originId === undefined) {
+    try {
+      getEntry(root, targetId)
+      targetExists = true
+    } catch {
+      targetExists = false
+    }
+  }
+  const superseding = targetId !== undefined && (originId !== undefined || targetExists)
+  const committed = commitKnowledge(
+    root,
+    {
+      ...(superseding ? { id: targetId } : {}),
+      type: proposal.frontmatter.type,
+      title: proposal.frontmatter.title,
+      summary: proposal.frontmatter.summary,
+      scope: proposal.frontmatter.scope,
+      tags: proposal.frontmatter.tags,
+      body: splitFrontmatter(readFileSync(proposal.path, 'utf8'))?.body ?? '',
+      actor: opts?.channel ?? 'human',
+    },
+    helpers,
+  )
+  try {
+    unlinkSync(proposal.path)
+  } catch {
+    // already gone — fine
+  }
+  helpers.appendLedger(root, {
+    type: 'proposal.committed',
+    proposalId: proposal.id,
+    knowledgeId: committed.id,
+    ...(superseding ? { supersedes: targetId } : {}),
+    channel: opts?.channel ?? 'human',
+    ...(opts?.note !== undefined ? { note: opts.note } : {}),
+    at: new Date().toISOString(),
+  })
+  return { knowledgeId: committed.id, version: committed.version, path: committed.path, ...(superseding ? { superseded: targetId } : {}) }
 }
 
 /** Soft-remove: status=deprecated + ledger record. Physical delete is explicit-only. */

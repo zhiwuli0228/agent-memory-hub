@@ -142,6 +142,9 @@ index/
 # ADR-0023: records/ 整目录是 per-hub 本地状态（ID 序列、账本、锁、凭据）——
 # 各 hub 独立记账，联邦同步只共享 knowledge/
 records/
+# 根级写锁（租约心跳文件）同样是 per-hub 本地状态：一旦被提交进共享历史，
+# 任何获取/释放锁都会造成 tracked 变更，直接卡死同步前的 rebase。
+.writer.lock
 
 # ── 常规系统噪声 ──
 .DS_Store

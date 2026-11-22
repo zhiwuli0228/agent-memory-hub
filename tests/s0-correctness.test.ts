@@ -1,11 +1,11 @@
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import { initHub } from '../src/core/hub.js'
 import { appendLedger, ledgerPath, readSequences, writeSequences } from '../src/core/ledger.js'
-import { commitKnowledge } from '../src/core/store.js'
+import { commitKnowledge, commitProposal, createProposal, listEntries, listProposals } from '../src/core/store.js'
 import { preflight, preflightIndex } from '../src/core/inject.js'
 import { splitFrontmatter } from '../src/core/frontmatter.js'
 import { hubSync, personalCommand, publishCommand, type HubFetch, type PublishTransport } from '../src/cli.js'
@@ -40,6 +40,11 @@ function centralFetch(centralState: ApiState): HubFetch {
 function enablePublish(root: string, endpoint = 'http://outlet.test/api'): void {
   const p = join(root, 'hub.yaml')
   writeFileSync(p, `${readFileSync(p, 'utf8')}\npublish.adapter: http\npublish.endpoint: ${endpoint}\n`, 'utf8')
+}
+
+function pendingFiles(root: string): string[] {
+  const dir = join(root, 'pending')
+  return existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.md')) : []
 }
 
 describe('S0 correctness fixes (decision-analysis F01–F07)', () => {
@@ -207,5 +212,25 @@ version: 1
     expect(personalCommand(c, 'init', bareUrl).ok).toBe(true)
     expect(personalCommand(c, 'sync').ok).toBe(true)
     expect(existsSync(join(c, 'knowledge-private', 'knowledge', 'KNO-000001.md'))).toBe(true)
+  })
+
+  it('S1: a same-title revision approved through the CLI path bumps the version (no dedup rejection)', () => {
+    const root = tempHub()
+    const target = commitKnowledge(root, { type: 'process', title: 'SOP', summary: 'v1', scope: { level: 'domain', domainId: 'team-ops' }, tags: [], body: 'v1 body', sourceRefs: ['n'] }, helpers())
+    const proposal = createProposal(root, { type: 'process', title: 'SOP', summary: 'v2 补充', scope: { level: 'domain', domainId: 'team-ops' }, tags: [], body: 'v2 body', sourceRefs: ['s1'], supersedes: [target.id] }, helpers())
+    // The shared approval implementation is what every surface (CLI/panel/MCP)
+    // now uses; the title-dedup guard must NOT fire on a revision.
+    const listed = listProposals(root).find((p) => p.id === proposal.id)
+    expect(listed).toBeDefined()
+    const committed = commitProposal(root, listed as NonNullable<typeof listed>, helpers(), { channel: 'cli-human' })
+    expect(committed.knowledgeId).toBe(target.id)
+    expect(committed.superseded).toBe(target.id)
+    expect(committed.version).toBe(2)
+    // Identity stable: no duplicate entry, pending queue drained, body upgraded.
+    expect(listEntries(root, { includeSoftRemoved: true }).filter((e) => e.frontmatter.type === 'process')).toHaveLength(1)
+    expect(pendingFiles(root)).toHaveLength(0)
+    const upgraded = readFileSync(join(root, 'knowledge', 'groups', 'team-ops', 'process', `${target.id}.md`), 'utf8')
+    expect(upgraded).toContain('v2 body')
+    expect(upgraded).toContain('version: 2')
   })
 })

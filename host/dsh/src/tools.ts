@@ -76,12 +76,13 @@ export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (arg
   define({
     name: 'memory_search',
     description:
-      "Search the user's accepted long-term memory (workspace + global). Use it before planning or modifying a project, and after a preflight hint points at an entry. Returns ranked hits with summaries; call memory_get for the body and memory_cite after actually using an entry.",
+      "Search the user's accepted long-term memory (workspace + global, plus the team/domain layer when team is given). Use it before planning or modifying a project, and after a preflight hint points at an entry. Returns ranked hits with summaries; call memory_get for the body and memory_cite after actually using an entry.",
     concurrencySafe: true,
     parameters: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Keywords or a natural-language question.' },
+        team: { type: 'string', description: 'Team/domain id — without it, team-layer knowledge is invisible to search.' },
         detail: { type: 'string', enum: ['L0', 'L1', 'L2'], description: 'L0 abstract only; L1 adds summary; L2 adds body.' },
         limit: { type: 'number' },
         types: { type: 'array', items: { type: 'string' } },
@@ -91,6 +92,7 @@ export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (arg
     execute: (args) => {
       const hits = hub.searchWithMetrics(ctx.index, ctx.metrics, String(args['query']), {
         workspaceId: ctx.workspace.workspaceId,
+        teamId: (args['team'] as string | undefined) ?? process.env['MEMHUB_TEAM'],
         detail: (args['detail'] as hub.DetailLevel | undefined) ?? 'L1',
         limit: typeof args['limit'] === 'number' ? args['limit'] : undefined,
         types: args['types'] as string[] | undefined,
@@ -175,7 +177,7 @@ export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (arg
   define({
     name: 'memory_propose',
     description:
-      'Create a pending candidate (pending/PRO-*.md). This NEVER writes knowledge/ directly — a human must approve via the serve panel or `memhub inbox`. Always include sourceRefs evidence. To RE-EXTRACT an existing entry (e.g. generalize an environment-specific flow into a universal one), pass supersedes: [entryId] — approval then bumps that entry\'s version instead of creating a duplicate.',
+      'Create a pending candidate (pending/PRO-*.md). This NEVER writes knowledge/ directly — a human must approve via the serve panel or `memhub inbox`. Always include sourceRefs evidence. To RE-EXTRACT an existing entry (e.g. generalize an environment-specific flow into a universal one), pass supersedes: [entryId] — approval then bumps that entry\'s version instead of creating a duplicate. Pass team=<teamId> to propose into that team/domain layer (still human-approved before it lands). Pass private: true to write straight into the personal tier (knowledge-private/ — never leaves the hub, no team approval).',
     parameters: {
       type: 'object',
       properties: {
@@ -185,6 +187,8 @@ export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (arg
         tags: { type: 'array', items: { type: 'string' } },
         body: { type: 'string' },
         sourceRefs: { type: 'array', items: { type: 'string' } },
+        team: { type: 'string', description: 'Team/domain id to propose into (else the current project workspace layer).' },
+        private: { type: 'boolean', description: 'true = write straight into the personal private tier (knowledge-private/, never leaves the hub, no team approval).' },
         supersedes: { type: 'array', items: { type: 'string' }, description: 'Entry id(s) this proposal re-extracts; approval upgrades their version.' },
       },
       required: ['type', 'title', 'summary', 'body'],
@@ -196,13 +200,36 @@ export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (arg
       try {
         hub.assertFencing(ctx.root, token)
         const supersedes = args['supersedes'] as string[] | undefined
+        const team = (args['team'] as string | undefined) ?? process.env['MEMHUB_TEAM']
+        if (args['private'] === true) {
+          // ADR-0023 personal tier: direct write, no team approval, never leaves.
+          const committed = hub.commitKnowledge(
+            ctx.root,
+            {
+              type: args['type'] as hub.KnowledgeType,
+              title: String(args['title']),
+              summary: String(args['summary']),
+              scope: { level: 'private' },
+              tags: args['tags'] as string[] | undefined,
+              body: String(args['body']),
+              sourceRefs: (args['sourceRefs'] as string[] | undefined) ?? [],
+              actor: 'model',
+            },
+            {
+              readSequences: hub.readSequences,
+              writeSequences: hub.writeSequences,
+              appendLedger: (root, record) => hub.appendLedger(hub.ledgerPath(root), record),
+            },
+          )
+          return { knowledgeId: committed.id, path: committed.path, scope: 'private', note: '已直写个人私有层（knowledge-private/，永不外流，无需团队审批）' }
+        }
         const proposal = hub.createProposal(
           ctx.root,
           {
             type: args['type'] as hub.KnowledgeType,
             title: String(args['title']),
             summary: String(args['summary']),
-            scope: { level: 'project', workspaceId: ctx.workspace.workspaceId },
+            scope: team !== undefined && team !== '' ? { level: 'domain', domainId: team } : { level: 'project', workspaceId: ctx.workspace.workspaceId },
             tags: args['tags'] as string[] | undefined,
             body: String(args['body']),
             sourceRefs: (args['sourceRefs'] as string[] | undefined) ?? [],
@@ -215,7 +242,7 @@ export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (arg
             appendLedger: (root, record) => hub.appendLedger(hub.ledgerPath(root), record),
           },
         )
-        return { proposalId: proposal.id, path: proposal.path, nextStep: 'human approval via panel or `memhub inbox approve`' }
+        return { proposalId: proposal.id, path: proposal.path, scope: team !== undefined && team !== '' ? `team:${team}` : 'project:current-workspace', nextStep: 'human approval via panel or `memhub inbox approve`' }
       } finally {
         hub.releaseLock(ctx.root, token)
       }
