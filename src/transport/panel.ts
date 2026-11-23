@@ -71,7 +71,20 @@ export const PANEL_HTML = `<!doctype html>
 </main>
 <script>
 let inbox = [];
-async function j(url, opts) { const r = await fetch(url, opts); return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) }; }
+async function j(url, opts) {
+  // Bounded fetch: an approval/git stall must never leave the console
+  // hanging forever on a spinner. 12s cap — the server degrades git timeouts
+  // to a non-blocking detail, so a slow working tree is surfaced, not frozen.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 12000);
+  try {
+    const r = await fetch(url, { ...(opts ?? {}), signal: ctrl.signal });
+    return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
+  } catch (e) {
+    const timedOut = e && e.name === 'AbortError';
+    return { ok: false, status: 0, timedOut, data: { error: timedOut ? '请求超时（服务忙或 git 卡住，已跳过渲染等待）' : String(e && e.message ? e.message : e) } };
+  } finally { clearTimeout(timer); }
+}
 function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function showTab(name) {
   document.querySelectorAll('.tabpane').forEach(p => p.classList.remove('active'));
@@ -90,9 +103,15 @@ async function refreshStatus() {
 async function refreshInbox() {
   refreshStatus();
   const i = await j('/api/inbox');
-  inbox = i.data.proposals ?? [];
   const groups = i.data.groups ?? {};
   const el = document.getElementById('inbox');
+  if (!i.ok) {
+    // Never render a failed fetch as "inbox 清空" — that would silently
+    // hide pending approvals. Surface the failure with a retry affordance.
+    el.innerHTML = '<div class="card" style="border-color:#7a3a3a">收件箱加载失败：' + esc(i.data?.error ?? ('HTTP ' + i.status)) + '<div class="row"><button onclick="refreshInbox()">重试</button></div></div>';
+    return;
+  }
+  inbox = i.data.proposals ?? [];
   if (inbox.length === 0) { el.innerHTML = '<div class="empty">✓ inbox 清空，无待审条目</div>'; }
   else {
     // ADR-0021 large-team triage: group by domain so each reviewer sees
@@ -120,11 +139,20 @@ async function refreshInbox() {
   const batchables = inbox.filter(p => p.grade === 'batch');
   document.getElementById('batchbar').style.display = batchables.length > 1 ? 'block' : 'none';
 }
-async function approveOne(id) { await j('/api/inbox/' + id + '/approve', { method: 'POST', headers: {'content-type':'application/json'}, body: '{}' }); refreshInbox(); }
-async function rejectOne(id) { await j('/api/inbox/' + id + '/reject', { method: 'POST', headers: {'content-type':'application/json'}, body: '{}' }); refreshInbox(); }
+async function approveOne(id) {
+  const r = await j('/api/inbox/' + id + '/approve', { method: 'POST', headers: {'content-type':'application/json'}, body: '{}' });
+  if (!r.ok) { alert('批准失败：' + esc(r.data?.error ?? ('HTTP ' + r.status)) + (r.data?.hint || r.data?.details?.hint ? '\n' + esc(r.data?.hint || r.data?.details?.hint) : '')); }
+  refreshInbox();
+}
+async function rejectOne(id) {
+  const r = await j('/api/inbox/' + id + '/reject', { method: 'POST', headers: {'content-type':'application/json'}, body: '{}' });
+  if (!r.ok) { alert('拒绝失败：' + esc(r.data?.error ?? ('HTTP ' + r.status))); }
+  refreshInbox();
+}
 async function approveBatch() {
   const ids = inbox.filter(p => p.grade === 'batch').map(p => p.id);
-  await j('/api/inbox/approve', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ ids }) });
+  const r = await j('/api/inbox/approve', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ ids }) });
+  if (!r.ok) { alert('批量批准失败：' + esc(r.data?.error ?? ('HTTP ' + r.status))); }
   refreshInbox();
 }
 async function loadEntries() {
