@@ -174,6 +174,24 @@ describe('panel API', () => {
     expect(PANEL_HTML).not.toContain('function EntriesPane')
   })
 
+  it('panel keeps 已废弃 always visible and offers manual deprecate/delete from the list', () => {
+    // 已废弃 must not disappear just because the bucket is empty.
+    expect(PANEL_HTML).toContain('STATUS_ALWAYS')
+    expect(PANEL_HTML).toContain("'deprecated'")
+    // Inline actions: deprecate an accepted entry, delete a deprecated one —
+    // both without opening the detail pane (自由化处理).
+    expect(PANEL_HTML).toContain('deprecateInline')
+    expect(PANEL_HTML).toContain('deleteInline')
+    expect(PANEL_HTML).toContain("className=\"entryacts\"")
+    // The reason is collected at action time and sent to the audited endpoints.
+    expect(PANEL_HTML).toContain('/deprecate')
+    expect(PANEL_HTML).toContain('/delete')
+    expect(PANEL_HTML).toContain('请填写废弃原因')
+    expect(PANEL_HTML).toContain('请填写删除原因')
+    // 已取代 is surfaced as its own badge instead of looking accepted.
+    expect(PANEL_HTML).toContain('已取代')
+  })
+
   it('panel <script> is valid JavaScript — a stray real newline inside a string literal breaks the whole console', () => {
     // Regression: the approveOne alert used '\n' INSIDE the PANEL_HTML template
     // literal; the compiler turned it into a real newline, producing a

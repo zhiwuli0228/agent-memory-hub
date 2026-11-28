@@ -189,6 +189,14 @@
   .entryline:hover { border-color: var(--border); background: var(--panel-2); }
   .entryline .id { color: var(--brand-2); font-size: 12px; min-width: 96px; font-variant-numeric: tabular-nums; }
   .entryline .title { flex: 1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .entryacts { display: flex; gap: 6px; flex-shrink: 0; }
+  .mini {
+    padding: 3px 10px; font-size: 11.5px; border-radius: 7px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--text-dim);
+  }
+  .mini:hover { color: var(--text); border-color: #2d3650; background: #222a3d; }
+  .mini.danger { color: var(--danger); border-color: rgba(248, 81, 73, .35); background: rgba(248, 81, 73, .08); }
+  .mini.danger:hover { background: rgba(248, 81, 73, .18); border-color: rgba(248, 81, 73, .55); }
   .detail pre {
     background: #0d1017; border: 1px solid var(--border-soft); border-radius: 10px;
     padding: 14px; max-height: 340px; overflow: auto; font-size: 12px;
@@ -307,10 +315,12 @@ const STATUS_LABELS = {
   candidate: '候选',
 };
 const STATUS_ORDER = ['all', 'pending', 'accepted', 'superseded', 'deprecated', 'rejected', 'candidate'];
+// 核心状态常驻显示（即使 0 条），这样「已废弃」等入口不会因为暂时没数据而消失，
+// 用户可以随时点进去做清理；其余状态有数据才出现，未知状态自动追加。
+const STATUS_ALWAYS = ['all', 'pending', 'accepted', 'deprecated'];
 function StatusNav({ active, counts, onPick }) {
-  // 只展示有数据的桶（全部除外），并保持固定顺序；未知状态按字母序追加。
-  const keys = STATUS_ORDER.filter((k) => k === 'all' || counts[k] > 0);
-  const extra = Object.keys(counts).filter((k) => k !== 'all' && !STATUS_ORDER.includes(k) && counts[k] > 0).sort();
+  const keys = STATUS_ORDER.filter((k) => STATUS_ALWAYS.includes(k) || counts[k] > 0);
+  const extra = Object.keys(counts).filter((k) => !STATUS_ORDER.includes(k) && counts[k] > 0).sort();
   return html`
     <div className="subnav">
       <span className="navlbl">状态</span>
@@ -441,6 +451,30 @@ function MemoryPane({ navCount }) {
     refresh();
   };
 
+  // 行内操作：不打开详情面板也能处理，理由现填现用（更自由）。
+  const deprecateInline = async (ev, item) => {
+    ev.stopPropagation();
+    const why = window.prompt('废弃 ' + item.id + '「' + item.title + '」的原因（必填）：', '');
+    if (why === null) return; // 用户取消
+    if (!why.trim()) { toast('请填写废弃原因', 'err'); return; }
+    const r = await j('/api/entries/' + encodeURIComponent(item.id) + '/deprecate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: why.trim() }) });
+    if (!r.ok) { toast('废弃失败：' + (r.data?.error ?? ('HTTP ' + r.status)), 'err'); return; }
+    toast('已废弃 ' + item.id, 'ok');
+    refresh();
+  };
+  const deleteInline = async (ev, item) => {
+    ev.stopPropagation();
+    if (!window.confirm('永久删除 ' + item.id + '「' + item.title + '」，不可恢复，确认？')) return;
+    const why = window.prompt('删除 ' + item.id + ' 的原因（必填，写入账本）：', '');
+    if (why === null) return;
+    if (!why.trim()) { toast('请填写删除原因', 'err'); return; }
+    const r = await j('/api/entries/' + encodeURIComponent(item.id) + '/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: why.trim() }) });
+    if (!r.ok) { toast('删除失败：' + (r.data?.error ?? ('HTTP ' + r.status)), 'err'); return; }
+    toast('已永久删除 ' + item.id + '（账本留痕）', 'ok');
+    if (detail && detail.id === item.id) { setDetail(null); setEditing(false); }
+    refresh();
+  };
+
   const pendingItems = pending.map((p) => ({ ...p, kind: 'pending' }));
   const entryItems = entries.map((e) => ({ ...e, kind: 'entry' }));
   const counts = { all: pendingItems.length + entryItems.length, pending: pendingItems.length };
@@ -501,7 +535,10 @@ function MemoryPane({ navCount }) {
           <button className="ghost" onClick=${() => setSelected(new Set())} disabled=${selected.size === 0}>清除选择</button>
         </div>` : null}
 
-      ${visible.length === 0 ? html`<${Empty} icon="🔎" text=${statusFilter === 'pending' ? '没有待审核条目' : '该状态下没有条目'} />` : visible.map((it) => it.kind === 'pending' ? html`
+      ${visible.length === 0 ? html`<${Empty} icon=${statusFilter === 'deprecated' ? '🗑' : '🔎'}
+          text=${statusFilter === 'deprecated'
+            ? '没有已废弃的条目（废弃后的记忆会出现在这里，可再永久删除）'
+            : statusFilter === 'pending' ? '没有待审核条目' : '该状态下没有条目'} />` : visible.map((it) => it.kind === 'pending' ? html`
         <div className=${'card ' + (selected.has(it.id) ? 'selected' : '')} key=${it.id}>
           <div className="head">
             <input type="checkbox" className="pick" checked=${selected.has(it.id)} onChange=${() => toggle(it.id)} title="勾选后可批量批准" />
@@ -524,8 +561,15 @@ function MemoryPane({ navCount }) {
         <div className="entryline" key=${it.id} onClick=${() => openEntry(it.id)}>
           <span className="id">${it.id}@v${it.version ?? '?'}</span>
           <span className="title">${it.title}</span>
-          ${it.status === 'deprecated' ? html`<span className="pill status-deprecated">已废弃</span>` : null}
+          ${it.status === 'deprecated'
+            ? html`<span className="pill status-deprecated">已废弃</span>`
+            : it.status === 'superseded' ? html`<span className="pill status-deprecated">已取代</span>` : null}
           <span className="pill type">${typeLabel(typeOf(it))}</span>
+          <span className="entryacts">
+            ${it.status === 'deprecated'
+              ? html`<button className="mini danger" title="永久删除这条已废弃记忆" onClick=${(ev) => deleteInline(ev, it)}>删除</button>`
+              : html`<button className="mini" title="手动废弃这条已审核记忆" onClick=${(ev) => deprecateInline(ev, it)}>废弃</button>`}
+          </span>
         </div>`)}
 
       ${detail ? html`
