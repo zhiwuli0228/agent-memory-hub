@@ -123,7 +123,34 @@
   input[type=text]:focus, textarea:focus { border-color: var(--brand); }
   textarea { width: 100%; resize: vertical; line-height: 1.5; }
   label { display: block; font-size: 12px; color: var(--text-dim); margin: 12px 0 5px; }
-  .toolbar { display: flex; gap: 8px; margin: 0 0 16px; }
+  .toolbar { display: flex; gap: 8px; margin: 0 0 16px; flex-wrap: wrap; align-items: center; }
+  .chiprow { display: flex; gap: 6px; flex-wrap: wrap; margin: 2px 0 14px; align-items: center; }
+  .chiprow .lbl { font-size: 11.5px; color: var(--text-faint); margin-right: 2px; letter-spacing: .4px; }
+  .chip {
+    border: 1px solid var(--border-soft); background: var(--panel); color: var(--text-dim);
+    border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer;
+    font-family: var(--font); transition: border-color .15s, color .15s, background .15s;
+  }
+  .chip:hover { color: var(--text); border-color: var(--border); }
+  .chip.active { background: rgba(77, 124, 255, .14); border-color: rgba(77, 124, 255, .5); color: var(--brand-2); font-weight: 600; }
+  .chip .n { opacity: .65; margin-left: 4px; font-size: 11px; }
+  .batchbar {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    border: 1px solid var(--border-soft); border-radius: var(--radius);
+    padding: 10px 14px; margin: 4px 0 16px; background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  }
+  .batchbar .selinfo { font-size: 12.5px; color: var(--text-dim); }
+  .batchbar .selinfo b { color: var(--brand-2); }
+  .card.selected { border-color: rgba(77, 124, 255, .55); box-shadow: 0 0 0 1px rgba(77, 124, 255, .25), var(--shadow); }
+  .pick {
+    width: 16px; height: 16px; accent-color: var(--brand); cursor: pointer;
+    flex-shrink: 0; margin-top: 2px;
+  }
+  .card .head { display: flex; gap: 12px; align-items: flex-start; }
+  .card .head .body { flex: 1; min-width: 0; }
+  .statline { display: flex; gap: 14px; color: var(--text-faint); font-size: 12px; margin: 0 0 14px; flex-wrap: wrap; }
+  .statline b { color: var(--text-dim); font-weight: 600; }
+
   .empty {
     color: var(--text-faint); text-align: center; padding: 56px 0; font-size: 13.5px;
     display: flex; flex-direction: column; align-items: center; gap: 10px;
@@ -213,6 +240,9 @@ function ErrorCard({ title, detail, onRetry }) {
 // ---- inbox ---------------------------------------------------------------
 function InboxPane({ navCount }) {
   const [state, setState] = useState({ loading: true, err: null, proposals: [], groups: {}, status: null });
+  const [selected, setSelected] = useState(() => new Set());
+  const [domainFilter, setDomainFilter] = useState('all');
+  const [typeFilter, setTypeFilter] = useState('all');
 
   const refresh = useCallback(async () => {
     setState((s) => ({ ...s, loading: true }));
@@ -222,6 +252,12 @@ function InboxPane({ navCount }) {
       return;
     }
     setState({ loading: false, err: null, proposals: ib.data.proposals ?? [], groups: ib.data.groups ?? {}, status: st.ok ? st.data : null });
+    // Drop selections that no longer exist (approved/rejected elsewhere).
+    setSelected((prev) => {
+      const live = new Set((ib.data.proposals ?? []).map((p) => p.id));
+      const next = new Set([...prev].filter((id) => live.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => { if (navCount !== null && navCount !== undefined) navCount(state.proposals.length); }, [state.proposals.length]);
@@ -248,50 +284,98 @@ function InboxPane({ navCount }) {
     else toast('已拒绝 ' + id, 'ok');
     refresh();
   };
-  const approveBatch = async () => {
-    const ids = state.proposals.filter((p) => p.grade === 'batch').map((p) => p.id);
-    if (ids.length === 0) { toast('没有可批量批准的低风险条目', 'err'); return; }
+
+  // Explicit selection only — nothing is ever batch-approved implicitly.
+  const toggle = (id) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const visible = state.proposals.filter((p) =>
+    (domainFilter === 'all' || p.domain === domainFilter) && (typeFilter === 'all' || p.type === typeFilter));
+  const allVisibleSelected = visible.length > 0 && visible.every((p) => selected.has(p.id));
+  const toggleSelectAll = () => {
+    if (allVisibleSelected) setSelected((prev) => {
+      const next = new Set(prev);
+      for (const p of visible) next.delete(p.id);
+      return next;
+    });
+    else setSelected((prev) => { const next = new Set(prev); for (const p of visible) next.add(p.id); return next; });
+  };
+  const approveSelected = async () => {
+    const ids = [...selected];
+    if (ids.length === 0) { toast('请先勾选要批准的条目', 'err'); return; }
     const r = await j('/api/inbox/approve', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids }) });
     if (!r.ok) toast('批量批准失败：' + (r.data?.error ?? ('HTTP ' + r.status)), 'err');
-    else toast('已批量批准 ' + ids.length + ' 条', 'ok');
+    else { toast('已批准选中的 ' + ids.length + ' 条', 'ok'); setSelected(new Set()); }
     refresh();
   };
 
   if (state.loading) return html`<${Loading} />`;
   if (state.err) return html`<${ErrorCard} title=${state.err.title} detail=${state.err.detail} onRetry=${refresh} />`;
 
-  const batchable = state.proposals.filter((p) => p.grade === 'batch').length;
+  const domains = Object.keys(state.groups);
+  const types = [...new Set(state.proposals.map((p) => p.type))];
+  const individualPicked = state.proposals.filter((p) => selected.has(p.id) && p.grade === 'individual').length;
   const byDomain = {};
-  for (const p of state.proposals) {
+  for (const p of visible) {
     const key = p.domain ?? '(未分域)';
     (byDomain[key] = byDomain[key] ?? []).push(p);
   }
-  const domains = Object.entries(byDomain);
 
   return html`
     <div>
       ${state.proposals.length === 0 ? html`<${Empty} icon="✓" text="inbox 清空，无待审条目" />` : html`
-        <div className="toolbar">
-          <button className="primary" onClick=${approveBatch} disabled=${batchable === 0}>批准所选低风险条目（批量 · ${batchable}）</button>
-          <button className="ghost" onClick=${refresh}>刷新</button>
+        <div className="statline">
+          <span>待审 <b>${state.proposals.length}</b></span>
+          <span>当前视图 <b>${visible.length}</b></span>
+          <span>已选 <b>${selected.size}</b></span>
+          <span>域 <b>${domains.length}</b></span>
+          <span>类型 <b>${types.length}</b></span>
         </div>
-        ${Object.keys(state.groups).length > 1 ? html`<div className="hint">按域分布：${Object.entries(state.groups).map(([g, n]) => g + ' × ' + n).join(' · ')}</div>` : null}
-        ${domains.map(([dom, list]) => html`
+
+        <div className="chiprow">
+          <span className="lbl">域</span>
+          <button className=${'chip ' + (domainFilter === 'all' ? 'active' : '')} onClick=${() => setDomainFilter('all')}>全部<span className="n">${state.proposals.length}</span></button>
+          ${domains.map((d) => html`<button key=${d} className=${'chip ' + (domainFilter === d ? 'active' : '')} onClick=${() => setDomainFilter(d)}>${d}<span className="n">${state.groups[d]}</span></button>`)}
+        </div>
+        <div className="chiprow">
+          <span className="lbl">类型</span>
+          <button className=${'chip ' + (typeFilter === 'all' ? 'active' : '')} onClick=${() => setTypeFilter('all')}>全部<span className="n">${state.proposals.length}</span></button>
+          ${types.map((t) => html`<button key=${t} className=${'chip ' + (typeFilter === t ? 'active' : '')} onClick=${() => setTypeFilter(t)}>${t}<span className="n">${state.proposals.filter((p) => p.type === t).length}</span></button>`)}
+        </div>
+
+        <div className="batchbar">
+          <label style=${{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-dim)', cursor: 'pointer' }}>
+            <input type="checkbox" className="pick" checked=${allVisibleSelected} onChange=${toggleSelectAll} />
+            全选当前视图（${visible.length}）
+          </label>
+          <span className="selinfo">已选 <b>${selected.size}</b> 条${individualPicked > 0 ? ' · 其中逐条级 ' + individualPicked + ' 条' : ''}</span>
+          <button className="primary" onClick=${approveSelected} disabled=${selected.size === 0}>批量批准选中的 ${selected.size} 条</button>
+          <button className="ghost" onClick=${() => setSelected(new Set())} disabled=${selected.size === 0}>清除选择</button>
+        </div>
+
+        ${visible.length === 0 ? html`<${Empty} icon="🔎" text="当前筛选下没有条目" />` : Object.entries(byDomain).map(([dom, list]) => html`
           <div key=${dom}>
             <div className="domain-head">${dom} <span>${list.length}</span></div>
             ${list.map((p) => html`
-              <div className="card" key=${p.id}>
-                <h3>${p.title}</h3>
-                <div className="meta">
-                  <span className="pill">${p.id}</span>
-                  <span className="pill type">${p.type}</span>
-                  <${GradeBadge} grade=${p.grade} />
-                  ${p.tags && p.tags.length ? p.tags.map((t) => html`<span className="pill" key=${t}>#${t}</span>`) : null}
-                </div>
-                ${p.summary ? html`<div className="summary">${p.summary}</div>` : null}
-                <div className="row">
-                  <button className="primary" onClick=${() => approveOne(p.id)}>批准</button>
-                  <button className="danger" onClick=${() => rejectOne(p.id)}>拒绝</button>
+              <div className=${'card ' + (selected.has(p.id) ? 'selected' : '')} key=${p.id}>
+                <div className="head">
+                  <input type="checkbox" className="pick" checked=${selected.has(p.id)} onChange=${() => toggle(p.id)} title="勾选后可批量批准" />
+                  <div className="body">
+                    <h3>${p.title}</h3>
+                    <div className="meta">
+                      <span className="pill">${p.id}</span>
+                      <span className="pill type">${p.type}</span>
+                      <${GradeBadge} grade=${p.grade} />
+                      ${p.tags && p.tags.length ? p.tags.map((t) => html`<span className="pill" key=${t}>#${t}</span>`) : null}
+                    </div>
+                    ${p.summary ? html`<div className="summary">${p.summary}</div>` : null}
+                    <div className="row">
+                      <button className="primary" onClick=${() => approveOne(p.id)}>批准</button>
+                      <button className="danger" onClick=${() => rejectOne(p.id)}>拒绝</button>
+                    </div>
+                  </div>
                 </div>
               </div>`)}
           </div>`)}
@@ -310,6 +394,8 @@ function EntriesPane() {
   const [summary, setSummary] = useState('');
   const [body, setBody] = useState('');
   const [reason, setReason] = useState('');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
 
   const toast = (msg, kind) => {
     const el = document.createElement('div');
@@ -367,6 +453,10 @@ function EntriesPane() {
 
   useEffect(() => { if (entries === null) loadAll(); }, []);
 
+  const types = [...new Set((entries ?? []).map((e) => e.type))];
+  const visible = (entries ?? []).filter((e) =>
+    (typeFilter === 'all' || e.type === typeFilter) && (statusFilter === 'all' || e.status === statusFilter));
+
   return html`
     <div>
       <div className="toolbar">
@@ -375,9 +465,21 @@ function EntriesPane() {
         <button onClick=${doSearch}>搜索</button>
         <button onClick=${loadAll}>全部</button>
       </div>
+      ${(entries ?? []).length > 0 ? html`
+        <div className="chiprow">
+          <span className="lbl">类型</span>
+          <button className=${'chip ' + (typeFilter === 'all' ? 'active' : '')} onClick=${() => setTypeFilter('all')}>全部<span className="n">${entries.length}</span></button>
+          ${types.map((t) => html`<button key=${t} className=${'chip ' + (typeFilter === t ? 'active' : '')} onClick=${() => setTypeFilter(t)}>${t}<span className="n">${entries.filter((e) => e.type === t).length}</span></button>`)}
+        </div>
+        <div className="chiprow">
+          <span className="lbl">状态</span>
+          <button className=${'chip ' + (statusFilter === 'all' ? 'active' : '')} onClick=${() => setStatusFilter('all')}>全部</button>
+          <button className=${'chip ' + (statusFilter === 'accepted' ? 'active' : '')} onClick=${() => setStatusFilter('accepted')}>已接受</button>
+          <button className=${'chip ' + (statusFilter === 'deprecated' ? 'active' : '')} onClick=${() => setStatusFilter('deprecated')}>已废弃</button>
+        </div>` : null}
       ${loading ? html`<${Loading} />` : err ? html`<${ErrorCard} title=${err.title} detail=${err.detail} onRetry=${loadAll} />` : html`
         <div>
-          ${entries === null ? null : entries.length === 0 ? html`<${Empty} icon="🔎" text="没有命中条目" />` : entries.map((e) => html`
+          ${entries === null ? null : visible.length === 0 ? html`<${Empty} icon="🔎" text="没有命中条目" />` : visible.map((e) => html`
             <div className="entryline" key=${e.id} onClick=${() => openEntry(e.id)}>
               <span className="id">${e.id}@v${e.version ?? '?'}</span>
               <span className="title">${e.title}</span>
