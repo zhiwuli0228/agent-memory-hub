@@ -149,6 +149,25 @@ describe('panel API', () => {
     expect(PANEL_HTML).toContain('/api/journal')
   })
 
+  it('panel exposes the two-level menu — 待审核/记忆库 as level 1, type categories as level 2', () => {
+    // Level 1: the label the user asked for, plus the other two panes.
+    expect(PANEL_HTML).toContain('待审核')
+    expect(PANEL_HTML).toContain('记忆库')
+    expect(PANEL_HTML).toContain('审计')
+    // Level 2: a dedicated nav (不是把分类堆在一页的分区标题) with an 全部 entry.
+    expect(PANEL_HTML).toContain('className="subnav"')
+    expect(PANEL_HTML).toContain("'subitem '")
+    expect(PANEL_HTML).toContain('navlbl')
+    expect(PANEL_HTML).toContain('全部类型')
+    // Type labels stay Chinese so the second level is readable.
+    for (const label of ['决策', '约束', '知识', '流程', 'API 目录', '运行时基线', '操作手册']) {
+      expect(PANEL_HTML).toContain(label)
+    }
+    // The 0.1.48 stacked-section layout must be gone: no per-type section heads.
+    expect(PANEL_HTML).not.toContain('className="section-head"')
+    expect(PANEL_HTML).not.toContain('function SectionHead')
+  })
+
   it('panel <script> is valid JavaScript — a stray real newline inside a string literal breaks the whole console', () => {
     // Regression: the approveOne alert used '\n' INSIDE the PANEL_HTML template
     // literal; the compiler turned it into a real newline, producing a
