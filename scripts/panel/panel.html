@@ -99,6 +99,15 @@
     color: var(--text-dim); font-size: 12.5px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase;
   }
   .domain-head::before { content: ""; width: 10px; height: 10px; border-radius: 3px; background: var(--brand); opacity: .7; }
+  .section { margin: 26px 0 0; }
+  .section-head { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; }
+  .section-head .tname { font-size: 14px; font-weight: 650; color: var(--text); letter-spacing: .2px; }
+  .section-head .tcount {
+    font-size: 11.5px; color: var(--text-faint); background: var(--panel);
+    border: 1px solid var(--border-soft); border-radius: 999px; padding: 1px 8px;
+  }
+  .section-head .line { flex: 1; height: 1px; background: var(--border-soft); }
+  .section .card:first-of-type { margin-top: 0; }
   .row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
   .grow { flex: 1; }
   button {
@@ -237,12 +246,51 @@ function ErrorCard({ title, detail, onRetry }) {
     </div>`;
 }
 
+// ---- type partition helpers ----------------------------------------------
+const TYPE_LABELS = {
+  decision: '决策',
+  constraint: '约束',
+  knowledge: '知识',
+  process: '流程',
+  'api-catalog': 'API 目录',
+  'runtime-base': '运行时基线',
+  'open-questions': '待解问题',
+  playbooks: '操作手册',
+  assets: '资产',
+};
+// Stable display order: known types first (canonical order), then others, then the untyped bucket.
+const TYPE_ORDER = ['decision', 'constraint', 'knowledge', 'process', 'api-catalog', 'runtime-base', 'open-questions', 'playbooks', 'assets'];
+function typeLabel(t) {
+  if (t === null || t === undefined || t === '') return '未分类型';
+  return TYPE_LABELS[t] ?? t;
+}
+function groupByType(items) {
+  const buckets = new Map();
+  for (const it of items) {
+    const k = it.type ?? '__none__';
+    if (!buckets.has(k)) buckets.set(k, []);
+    buckets.get(k).push(it);
+  }
+  const known = TYPE_ORDER.filter((t) => buckets.has(t));
+  const rest = [...buckets.keys()].filter((t) => !TYPE_ORDER.includes(t) && t !== '__none__').sort();
+  const keys = [...known, ...rest];
+  if (buckets.has('__none__')) keys.push('__none__');
+  return keys.map((k) => ({ key: k, label: typeLabel(k), items: buckets.get(k) }));
+}
+function SectionHead({ label, count }) {
+  return html`
+    <div className="section-head">
+      <span className="tname">${label}</span>
+      <span className="tcount">${count}</span>
+      <span className="line"></span>
+    </div>`;
+}
+
 // ---- inbox ---------------------------------------------------------------
 function InboxPane({ navCount }) {
   const [state, setState] = useState({ loading: true, err: null, proposals: [], groups: {}, status: null });
   const [selected, setSelected] = useState(() => new Set());
   const [domainFilter, setDomainFilter] = useState('all');
-  const [typeFilter, setTypeFilter] = useState('all');
 
   const refresh = useCallback(async () => {
     setState((s) => ({ ...s, loading: true }));
@@ -291,8 +339,7 @@ function InboxPane({ navCount }) {
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
-  const visible = state.proposals.filter((p) =>
-    (domainFilter === 'all' || p.domain === domainFilter) && (typeFilter === 'all' || p.type === typeFilter));
+  const visible = state.proposals.filter((p) => domainFilter === 'all' || p.domain === domainFilter);
   const allVisibleSelected = visible.length > 0 && visible.every((p) => selected.has(p.id));
   const toggleSelectAll = () => {
     if (allVisibleSelected) setSelected((prev) => {
@@ -315,13 +362,9 @@ function InboxPane({ navCount }) {
   if (state.err) return html`<${ErrorCard} title=${state.err.title} detail=${state.err.detail} onRetry=${refresh} />`;
 
   const domains = Object.keys(state.groups);
-  const types = [...new Set(state.proposals.map((p) => p.type))];
+  const typeBuckets = groupByType(state.proposals);
   const individualPicked = state.proposals.filter((p) => selected.has(p.id) && p.grade === 'individual').length;
-  const byDomain = {};
-  for (const p of visible) {
-    const key = p.domain ?? '(未分域)';
-    (byDomain[key] = byDomain[key] ?? []).push(p);
-  }
+  const sections = groupByType(visible);
 
   return html`
     <div>
@@ -331,18 +374,13 @@ function InboxPane({ navCount }) {
           <span>当前视图 <b>${visible.length}</b></span>
           <span>已选 <b>${selected.size}</b></span>
           <span>域 <b>${domains.length}</b></span>
-          <span>类型 <b>${types.length}</b></span>
+          <span>类型 <b>${typeBuckets.length}</b></span>
         </div>
 
         <div className="chiprow">
           <span className="lbl">域</span>
           <button className=${'chip ' + (domainFilter === 'all' ? 'active' : '')} onClick=${() => setDomainFilter('all')}>全部<span className="n">${state.proposals.length}</span></button>
           ${domains.map((d) => html`<button key=${d} className=${'chip ' + (domainFilter === d ? 'active' : '')} onClick=${() => setDomainFilter(d)}>${d}<span className="n">${state.groups[d]}</span></button>`)}
-        </div>
-        <div className="chiprow">
-          <span className="lbl">类型</span>
-          <button className=${'chip ' + (typeFilter === 'all' ? 'active' : '')} onClick=${() => setTypeFilter('all')}>全部<span className="n">${state.proposals.length}</span></button>
-          ${types.map((t) => html`<button key=${t} className=${'chip ' + (typeFilter === t ? 'active' : '')} onClick=${() => setTypeFilter(t)}>${t}<span className="n">${state.proposals.filter((p) => p.type === t).length}</span></button>`)}
         </div>
 
         <div className="batchbar">
@@ -355,10 +393,10 @@ function InboxPane({ navCount }) {
           <button className="ghost" onClick=${() => setSelected(new Set())} disabled=${selected.size === 0}>清除选择</button>
         </div>
 
-        ${visible.length === 0 ? html`<${Empty} icon="🔎" text="当前筛选下没有条目" />` : Object.entries(byDomain).map(([dom, list]) => html`
-          <div key=${dom}>
-            <div className="domain-head">${dom} <span>${list.length}</span></div>
-            ${list.map((p) => html`
+        ${visible.length === 0 ? html`<${Empty} icon="🔎" text="当前筛选下没有条目" />` : sections.map((sec) => html`
+          <div className="section" key=${sec.key}>
+            <${SectionHead} label=${sec.label} count=${sec.items.length} />
+            ${sec.items.map((p) => html`
               <div className=${'card ' + (selected.has(p.id) ? 'selected' : '')} key=${p.id}>
                 <div className="head">
                   <input type="checkbox" className="pick" checked=${selected.has(p.id)} onChange=${() => toggle(p.id)} title="勾选后可批量批准" />
@@ -366,7 +404,7 @@ function InboxPane({ navCount }) {
                     <h3>${p.title}</h3>
                     <div className="meta">
                       <span className="pill">${p.id}</span>
-                      <span className="pill type">${p.type}</span>
+                      <span className="pill type">${sec.label}</span>
                       <${GradeBadge} grade=${p.grade} />
                       ${p.tags && p.tags.length ? p.tags.map((t) => html`<span className="pill" key=${t}>#${t}</span>`) : null}
                     </div>
@@ -394,7 +432,6 @@ function EntriesPane() {
   const [summary, setSummary] = useState('');
   const [body, setBody] = useState('');
   const [reason, setReason] = useState('');
-  const [typeFilter, setTypeFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
 
   const toast = (msg, kind) => {
@@ -453,9 +490,8 @@ function EntriesPane() {
 
   useEffect(() => { if (entries === null) loadAll(); }, []);
 
-  const types = [...new Set((entries ?? []).map((e) => e.type))];
-  const visible = (entries ?? []).filter((e) =>
-    (typeFilter === 'all' || e.type === typeFilter) && (statusFilter === 'all' || e.status === statusFilter));
+  const visible = (entries ?? []).filter((e) => statusFilter === 'all' || e.status === statusFilter);
+  const sections = groupByType(visible);
 
   return html`
     <div>
@@ -467,24 +503,23 @@ function EntriesPane() {
       </div>
       ${(entries ?? []).length > 0 ? html`
         <div className="chiprow">
-          <span className="lbl">类型</span>
-          <button className=${'chip ' + (typeFilter === 'all' ? 'active' : '')} onClick=${() => setTypeFilter('all')}>全部<span className="n">${entries.length}</span></button>
-          ${types.map((t) => html`<button key=${t} className=${'chip ' + (typeFilter === t ? 'active' : '')} onClick=${() => setTypeFilter(t)}>${t}<span className="n">${entries.filter((e) => e.type === t).length}</span></button>`)}
-        </div>
-        <div className="chiprow">
           <span className="lbl">状态</span>
-          <button className=${'chip ' + (statusFilter === 'all' ? 'active' : '')} onClick=${() => setStatusFilter('all')}>全部</button>
-          <button className=${'chip ' + (statusFilter === 'accepted' ? 'active' : '')} onClick=${() => setStatusFilter('accepted')}>已接受</button>
-          <button className=${'chip ' + (statusFilter === 'deprecated' ? 'active' : '')} onClick=${() => setStatusFilter('deprecated')}>已废弃</button>
+          <button className=${'chip ' + (statusFilter === 'all' ? 'active' : '')} onClick=${() => setStatusFilter('all')}>全部<span className="n">${entries.length}</span></button>
+          <button className=${'chip ' + (statusFilter === 'accepted' ? 'active' : '')} onClick=${() => setStatusFilter('accepted')}>已接受<span className="n">${entries.filter((e) => e.status === 'accepted').length}</span></button>
+          <button className=${'chip ' + (statusFilter === 'deprecated' ? 'active' : '')} onClick=${() => setStatusFilter('deprecated')}>已废弃<span className="n">${entries.filter((e) => e.status === 'deprecated').length}</span></button>
         </div>` : null}
       ${loading ? html`<${Loading} />` : err ? html`<${ErrorCard} title=${err.title} detail=${err.detail} onRetry=${loadAll} />` : html`
         <div>
-          ${entries === null ? null : visible.length === 0 ? html`<${Empty} icon="🔎" text="没有命中条目" />` : visible.map((e) => html`
-            <div className="entryline" key=${e.id} onClick=${() => openEntry(e.id)}>
-              <span className="id">${e.id}@v${e.version ?? '?'}</span>
-              <span className="title">${e.title}</span>
-              ${e.status === 'deprecated' ? html`<span className="pill status-deprecated">已废弃</span>` : null}
-              <span className="pill type">${e.type}</span>
+          ${entries === null ? null : visible.length === 0 ? html`<${Empty} icon="🔎" text="没有命中条目" />` : sections.map((sec) => html`
+            <div className="section" key=${sec.key}>
+              <${SectionHead} label=${sec.label} count=${sec.items.length} />
+              ${sec.items.map((e) => html`
+                <div className="entryline" key=${e.id} onClick=${() => openEntry(e.id)}>
+                  <span className="id">${e.id}@v${e.version ?? '?'}</span>
+                  <span className="title">${e.title}</span>
+                  ${e.status === 'deprecated' ? html`<span className="pill status-deprecated">已废弃</span>` : null}
+                  <span className="pill type">${sec.label}</span>
+                </div>`)}
             </div>`)}
         </div>`}
       ${detail ? html`
