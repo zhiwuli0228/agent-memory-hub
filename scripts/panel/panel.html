@@ -122,6 +122,47 @@
   .subitem.active .n { color: var(--brand-2); background: rgba(77, 124, 255, .18); }
   .crumb { font-size: 12px; color: var(--text-faint); margin: -8px 0 14px 15px; }
   .crumb b { color: var(--text-dim); font-weight: 600; }
+
+  /* 蒸馏：配置表单 */
+  .formgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px 22px; margin-top: 12px; }
+  .field label { display: block; font-size: 12px; color: var(--text-dim); margin: 0 0 5px; }
+  .field input[type=text], .field select {
+    width: 100%; background: var(--bg-soft); border: 1px solid var(--border); color: var(--text);
+    border-radius: 9px; padding: 8px 11px; font-size: 13px; font-family: var(--font); outline: none;
+  }
+  .field input[type=text]:focus, .field select:focus { border-color: var(--brand); }
+  .fhint { font-size: 11.5px; color: var(--text-faint); margin-top: 4px; line-height: 1.45; }
+  .switchrow { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); cursor: pointer; padding-top: 6px; }
+  .daypicker { display: flex; gap: 4px; flex-wrap: wrap; }
+  .daybtn {
+    border: 1px solid var(--border-soft); background: var(--panel); color: var(--text-dim);
+    border-radius: 8px; padding: 5px 9px; font-size: 12px; cursor: pointer; font-family: var(--font);
+  }
+  .daybtn.on { background: rgba(77,124,255,.16); border-color: rgba(77,124,255,.55); color: var(--brand-2); font-weight: 600; }
+
+  /* 蒸馏：运行历史 */
+  .runlist { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+  .runrow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12.5px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 9px; background: var(--panel); }
+  .runid { color: var(--brand-2); font-variant-numeric: tabular-nums; }
+  .rundetail { color: var(--text-faint); }
+  .runstatus { border-radius: 999px; padding: 1px 9px; font-size: 11px; font-weight: 600; border: 1px solid var(--border-soft); }
+  .runstatus.s-closed { color: var(--ok); border-color: rgba(63,185,80,.4); background: rgba(63,185,80,.1); }
+  .runstatus.s-failed { color: var(--danger); border-color: rgba(248,81,73,.4); background: rgba(248,81,73,.1); }
+  .runstatus.s-staged, .runstatus.s-reviewing { color: var(--brand-2); border-color: rgba(77,124,255,.45); background: rgba(77,124,255,.12); }
+  .runstatus.s-extracting, .runstatus.s-planned { color: var(--warn); border-color: rgba(210,153,34,.4); background: rgba(210,153,34,.1); }
+
+  /* 蒸馏审核：批次卡片 */
+  .batchcard { border: 1px solid var(--border-soft); border-radius: var(--radius); background: linear-gradient(180deg, var(--panel-2), var(--panel)); margin: 14px 0; padding: 4px 14px 14px; }
+  .batchhead { display: flex; gap: 10px; align-items: center; cursor: pointer; padding: 12px 2px; flex-wrap: wrap; }
+  .bcaret { color: var(--text-faint); font-size: 12px; }
+  .bcid { color: var(--brand-2); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .bcmeta { color: var(--text-faint); font-size: 12px; flex: 1; }
+  .bccount { font-size: 12px; color: var(--text-dim); }
+  .bcsummary { color: var(--text-faint); font-size: 12.5px; padding: 0 2px 10px; }
+  .tierhead { font-size: 12.5px; font-weight: 650; color: var(--text-dim); margin: 14px 0 8px; padding-left: 2px; }
+  .tierhead.risk { color: var(--danger); }
+  .evidence { font-size: 11.5px; color: var(--text-faint); margin-top: 8px; line-height: 1.5; word-break: break-all; border-left: 2px solid var(--border); padding-left: 8px; }
+  .evidence.warn { color: var(--warn); border-left-color: rgba(210,153,34,.5); }
   .row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
   .grow { flex: 1; }
   button {
@@ -366,7 +407,10 @@ function MemoryPane({ navCount }) {
       setLoading(false);
       return;
     }
-    const proposals = ib.ok ? (ib.data.proposals ?? []) : [];
+    // ADR-0031: the instant inbox and the distillation queue are SEPARATE
+    // review surfaces (different context, different volume). This pane only
+    // owns instant-origin proposals; distill ones live in 蒸馏审核.
+    const proposals = ib.ok ? (ib.data.proposals ?? []).filter((p) => p.queue !== 'distill') : [];
     setPending(proposals);
     setEntries(en.ok ? (en.data.entries ?? []) : []);
     setLoading(false);
@@ -660,10 +704,373 @@ function AuditPane() {
     </div>`;
 }
 
+// ---- 蒸馏（ADR-0031）：调度配置 + 运行历史 --------------------------------
+const WEEKDAY_LABELS = { MO: '周一', TU: '周二', WE: '周三', TH: '周四', FR: '周五', SA: '周六', SU: '周日' };
+const STATUS_TEXT = {
+  planned: '已计划', extracting: '萃取中', staged: '待审核',
+  reviewing: '审核中', closed: '已完成', abandoned: '已放弃', failed: '失败',
+};
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false });
+}
+
+function Field({ label, hint, children }) {
+  return html`
+    <div className="field">
+      <label>${label}</label>
+      ${children}
+      ${hint ? html`<div className="fhint">${hint}</div>` : null}
+    </div>`;
+}
+
+function DistillPane() {
+  const [state, setState] = useState({ loading: true, err: null, data: null });
+  const [draft, setDraft] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [trial, setTrial] = useState(null);
+
+  const toast = (msg, kind) => {
+    const el = document.createElement('div');
+    el.className = 'toast ' + (kind === 'err' ? 'err' : 'ok');
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 3600);
+  };
+
+  const load = useCallback(async () => {
+    setState((s) => ({ ...s, loading: true }));
+    const r = await j('/api/distill');
+    if (!r.ok) { setState({ loading: false, err: { title: '蒸馏状态加载失败', detail: r.data?.error ?? ('HTTP ' + r.status) }, data: null }); return; }
+    setState({ loading: false, err: null, data: r.data });
+    setDraft(r.data.config);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const patch = (path, value) => {
+    setDraft((prev) => {
+      if (!prev) return prev;
+      const next = JSON.parse(JSON.stringify(prev));
+      let node = next;
+      for (let i = 0; i < path.length - 1; i++) node = node[path[i]];
+      node[path[path.length - 1]] = value;
+      return next;
+    });
+  };
+
+  const save = async () => {
+    setSaving(true);
+    const r = await j('/api/distill/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ config: draft }) });
+    setSaving(false);
+    if (!r.ok) { toast('保存失败：' + (r.data?.error ?? ('HTTP ' + r.status)), 'err'); return; }
+    toast('调度已保存', 'ok');
+    load();
+  };
+
+  // Dry run: opens a run record but submits no proposals — proves the plumbing.
+  const dryRun = async () => {
+    const runId = 'RUN-TRIAL-' + Date.now().toString(36).toUpperCase();
+    const start = await j('/api/distill/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'start', runId, trigger: 'manual' }) });
+    if (!start.ok) { toast('试运行失败：' + (start.data?.error ?? ('HTTP ' + start.status)), 'err'); return; }
+    const fin = await j('/api/distill/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'finish', runId, counts: { candidates: 0, proposed: 0 } }) });
+    setTrial({ runId, ok: fin.ok, watermark: start.data?.run?.watermarkBefore ?? '' });
+    toast('试运行完成（未提交任何提案）', 'ok');
+    load();
+  };
+
+  if (state.loading && state.data === null) return html`<${Loading} />`;
+  if (state.err) return html`<${ErrorCard} title=${state.err.title} detail=${state.err.detail} onRetry=${load} />`;
+  const d = state.data;
+  const cfg = draft ?? d.config;
+  const runs = d.runs ?? [];
+
+  return html`
+    <div>
+      <div className="statline">
+        <span>调度 <b>${cfg.enabled ? '已启用' : '未启用'}</b></span>
+        <span>下次触发 <b>${fmtTime(d.nextAt)}</b></span>
+        <span>现在 <b>${d.due ? '该跑了' : '不跑'}</b></span>
+        <span>待蒸馏审核 <b>${d.queueDepth ?? 0}</b></span>
+        <span>连续零产出 <b>${d.zeroOutputStreak ?? 0}</b></span>
+      </div>
+
+      ${d.reasons && d.reasons.length ? html`
+        <div className=${'card ' + (d.due ? '' : 'error-card')}>
+          <div className="summary">${d.due ? '✅ 当前可执行一轮萃取' : '⏸ 暂不执行：' + d.reasons.join('；')}</div>
+        </div>` : null}
+
+      ${d.zeroOutputStreak >= (cfg.notify?.zeroOutputAlertAfter ?? 2) && d.zeroOutputStreak > 0 ? html`
+        <div className="card error-card"><div className="err-title">⚠ 连续 ${d.zeroOutputStreak} 轮零产出</div>
+          <div className="summary">蒸馏在跑但没有提出任何知识，通常是提示词或窗口选错了——不要当成正常。</div></div>` : null}
+
+      <div className="card">
+        <h3>定时蒸馏配置</h3>
+        <div className="formgrid">
+          <${Field} label="启用定时">
+            <label className="switchrow">
+              <input type="checkbox" checked=${!!cfg.enabled} onChange=${(e) => patch(['enabled'], e.target.checked)} />
+              <span>${cfg.enabled ? '到期自动触发' : '关闭（仅手动）'}</span>
+            </label>
+          <//>
+          <${Field} label="频率" hint="按本地时区计算，界面直接显示下次触发时间">
+            <select value=${cfg.schedule.mode} onChange=${(e) => patch(['schedule', 'mode'], e.target.value)}>
+              <option value="daily">每天</option>
+              <option value="weekly">每周</option>
+              <option value="interval">固定间隔</option>
+            </select>
+          <//>
+          ${cfg.schedule.mode === 'weekly' ? html`
+            <${Field} label="星期">
+              <div className="daypicker">
+                ${['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'].map((k) => html`
+                  <button key=${k} className=${'daybtn ' + ((cfg.schedule.days ?? []).includes(k) ? 'on' : '')}
+                    onClick=${() => {
+                      const cur = new Set(cfg.schedule.days ?? []);
+                      if (cur.has(k)) cur.delete(k); else cur.add(k);
+                      patch(['schedule', 'days'], [...cur]);
+                    }}>${WEEKDAY_LABELS[k]}</button>`)}
+              </div>
+            <//>` : null}
+          ${cfg.schedule.mode !== 'interval' ? html`
+            <${Field} label="时间（本地）">
+              <input type="text" value=${cfg.schedule.at ?? '09:00'} placeholder="HH:mm"
+                onChange=${(e) => patch(['schedule', 'at'], e.target.value)} />
+            <//>` : html`
+            <${Field} label="间隔小时数">
+              <input type="text" value=${String(cfg.schedule.intervalHours ?? 24)}
+                onChange=${(e) => patch(['schedule', 'intervalHours'], Number(e.target.value) || 24)} />
+            <//>`}
+          <${Field} label="时区">
+            <input type="text" value=${cfg.schedule.timezone} onChange=${(e) => patch(['schedule', 'timezone'], e.target.value)} />
+          <//>
+          <${Field} label="单轮窗口上限（小时）" hint="只取这段时间内的事件">
+            <input type="text" value=${String(cfg.window.maxHours)} onChange=${(e) => patch(['window', 'maxHours'], Number(e.target.value) || 72)} />
+          <//>
+          <${Field} label="单轮候选上限" hint="建议不超过 30，超过审核就容易盲批">
+            <input type="text" value=${String(cfg.batch.maxCandidates)} onChange=${(e) => patch(['batch', 'maxCandidates'], Number(e.target.value) || 30)} />
+          <//>
+          <${Field} label="错过补偿（天）" hint="落后太久就不再自动补跑，避免一次萃取巨量积压">
+            <input type="text" value=${String(cfg.missed.maxCatchupDays)} onChange=${(e) => patch(['missed', 'maxCatchupDays'], Number(e.target.value) || 7)} />
+          <//>
+          <${Field} label="低风险自动入库" hint="默认关闭：审核后方可入库；开启也只作用于知识/资产类型，并带每日配额">
+            <label className="switchrow">
+              <input type="checkbox" checked=${!!cfg.trust.autoPromote} onChange=${(e) => patch(['trust', 'autoPromote'], e.target.checked)} />
+              <span>${cfg.trust.autoPromote ? '开启（有配额与 TTL）' : '关闭（全部人工审核）'}</span>
+            </label>
+          <//>
+        </div>
+        <div className="row" style=${{ marginTop: 16 }}>
+          <button className="primary" onClick=${save} disabled=${saving}>${saving ? '保存中…' : '保存调度'}</button>
+          <button onClick=${dryRun}>立即试运行（不提交提案）</button>
+          <button className="ghost" onClick=${load}>刷新</button>
+        </div>
+        ${trial ? html`<div className="hint">试运行 ${trial.runId} 已完成，未提交任何提案；水位 ${trial.watermark || '空'}。</div>` : null}
+      </div>
+
+      <div className="card">
+        <h3>运行历史（最近 ${runs.length}）</h3>
+        ${runs.length === 0 ? html`<div className="hint">还没有运行记录。定时触发后会在这里看到每一批的身份、窗口与产出。</div>` : html`
+          <div className="runlist">
+            ${runs.map((r) => html`
+              <div className="runrow" key=${r.id}>
+                <span className="runid">${r.id}</span>
+                <span className=${'runstatus s-' + r.status}>${STATUS_TEXT[r.status] ?? r.status}</span>
+                <span className="rundetail">
+                  ${fmtTime(r.startedAt)} · 触发 ${r.trigger} ·
+                  候选 ${r.counts.candidates} / 提案 ${r.counts.proposed} / 拒绝 ${r.counts.rejected}
+                  ${r.durationMs ? ' · 耗时 ' + Math.round(r.durationMs / 1000) + 's' : ''}
+                  ${r.error ? ' · 错误：' + r.error : ''}
+                </span>
+              </div>`)}
+          </div>`}
+      </div>
+      <div className="hint">hub 不持有模型：这里配置「何时萃取、取多大窗口、产出多少」，真正的蒸馏由宿主 agent 按 memory-distill skill 执行，产物进入「蒸馏审核」独立队列。</div>
+    </div>`;
+}
+
+// ---- 蒸馏审核（第二入口，ADR-0031）--------------------------------------
+// 与「记忆库 / 待审核」分开：这里只处理定时蒸馏的批量产物。
+// 批次卡片为容器、条目为决策单元、风险置顶（调研结论：一张卡整批接受会漏 outlier）。
+const RISK_TYPES = new Set(['decision', 'constraint', 'api-catalog', 'process']);
+const RISK_LABEL = { decision: '决策', constraint: '约束', 'api-catalog': 'API 目录', process: '流程' };
+
+function DistillReviewPane({ navCount }) {
+  const [state, setState] = useState({ loading: true, err: null, total: 0, batches: [] });
+  const [selected, setSelected] = useState(() => new Set());
+  const [expanded, setExpanded] = useState(() => new Set());
+  const [sampleMode, setSampleMode] = useState(null); // batch runId awaiting 抽样复核
+  const [reason, setReason] = useState('');
+
+  const toast = (msg, kind) => {
+    const el = document.createElement('div');
+    el.className = 'toast ' + (kind === 'err' ? 'err' : 'ok');
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 3600);
+  };
+
+  const load = useCallback(async () => {
+    setState((s) => ({ ...s, loading: true }));
+    const r = await j('/api/distill/queue');
+    if (!r.ok) { setState({ loading: false, err: { title: '蒸馏队列加载失败', detail: r.data?.error ?? ('HTTP ' + r.status) }, total: 0, batches: [] }); return; }
+    const batches = r.data.batches ?? [];
+    setState({ loading: false, err: null, total: r.data.total ?? 0, batches });
+    // 选中项只保留仍然存在的
+    const live = new Set(batches.flatMap((b) => b.items.map((i) => i.id)));
+    setSelected((prev) => { const next = new Set([...prev].filter((id) => live.has(id))); return next.size === prev.size ? prev : next; });
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (navCount) navCount(state.total); }, [state.total]);
+
+  const toggle = (id) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const toggleExpand = (runId) => setExpanded((prev) => {
+    const next = new Set(prev);
+    if (next.has(runId)) next.delete(runId); else next.add(runId);
+    return next;
+  });
+
+  const approveIds = async (ids, label) => {
+    if (ids.length === 0) { toast('请先勾选要批准的条目', 'err'); return; }
+    const r = await j('/api/inbox/approve', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids }) });
+    if (!r.ok) { toast('批准失败：' + (r.data?.error ?? ('HTTP ' + r.status)), 'err'); return; }
+    toast('已批准' + label + ' ' + ids.length + ' 条', 'ok');
+    setSelected(new Set());
+    setSampleMode(null);
+    load();
+  };
+  const rejectIds = async (ids) => {
+    if (ids.length === 0) { toast('请先勾选要拒绝的条目', 'err'); return; }
+    const r = await j('/api/inbox/reject', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids, note: reason.trim() || 'distill 审核拒绝' }) });
+    if (!r.ok) { toast('拒绝失败：' + (r.data?.error ?? ('HTTP ' + r.status)), 'err'); return; }
+    toast('已拒绝 ' + ids.length + ' 条', 'ok');
+    setSelected(new Set());
+    setReason('');
+    load();
+  };
+
+  if (state.loading && state.batches.length === 0) return html`<${Loading} />`;
+  if (state.err) return html`<${ErrorCard} title=${state.err.title} detail=${state.err.detail} onRetry=${load} />`;
+
+  if (state.total === 0) {
+    return html`<${Empty} icon="🧪" text="蒸馏审核队列是空的。定时萃取产出的提案会出现在这里，与日常收件箱分开。" />`;
+  }
+
+  const allIds = state.batches.flatMap((b) => b.items.map((i) => i.id));
+  const highRisk = state.batches.flatMap((b) => b.items.filter((i) => RISK_TYPES.has(i.type)).map((i) => i.id));
+
+  return html`
+    <div>
+      <div className="statline">
+        <span>待审 <b>${state.total}</b></span>
+        <span>批次 <b>${state.batches.length}</b></span>
+        <span>已选 <b>${selected.size}</b></span>
+        <span>高风险 <b>${highRisk.length}</b></span>
+      </div>
+
+      ${state.total > 50 ? html`<div className="card error-card">
+        <div className="err-title">⚠ 队列积压 ${state.total} 条</div>
+        <div className="summary">调研阈值：队列超过 50 条时审核质量明显下降。建议先在「蒸馏」页把频率调低或窗口调小，而不是硬审完。</div></div>` : null}
+
+      <div className="batchbar">
+        <span className="selinfo">已选 <b>${selected.size}</b> 条${selected.size > 0 && [...selected].some((id) => highRisk.includes(id)) ? ' · 含高风险项，请逐条确认' : ''}</span>
+        <button className="primary" onClick=${() => approveIds([...selected], '选中')} disabled=${selected.size === 0}>批准选中 ${selected.size} 条</button>
+        <button className="danger" onClick=${() => rejectIds([...selected])} disabled=${selected.size === 0}>拒绝选中 ${selected.size} 条</button>
+        <input type="text" value=${reason} placeholder="拒绝原因（写入账本，可选）"
+          onChange=${(e) => setReason(e.target.value)} style=${{ minWidth: 220 }} />
+        <button className="ghost" onClick=${() => setSelected(new Set())} disabled=${selected.size === 0}>清除选择</button>
+      </div>
+
+      ${state.batches.map((batch) => {
+        const items = batch.items;
+        const risk = items.filter((i) => RISK_TYPES.has(i.type));
+        const safe = items.filter((i) => !RISK_TYPES.has(i.type));
+        const isOpen = expanded.has(batch.runId);
+        const run = batch.run;
+        return html`
+          <div className="batchcard" key=${batch.runId}>
+            <div className="batchhead" onClick=${() => toggleExpand(batch.runId)}>
+              <span className="bcaret">${isOpen ? '▾' : '▸'}</span>
+              <span className="bcid">${batch.runId}</span>
+              ${run ? html`<span className=${'runstatus s-' + run.status}>${STATUS_TEXT[run.status] ?? run.status}</span>` : null}
+              <span className="bcmeta">
+                ${run ? fmtTime(run.startedAt) + ' · 耗时 ' + Math.round((run.durationMs ?? 0) / 1000) + 's · ' + (run.promptVersion ?? '') : '（无运行记录）'}
+              </span>
+              <span className="bccount">高 ${risk.length} · 低 ${safe.length}</span>
+            </div>
+
+            ${isOpen ? html`
+              ${risk.length > 0 ? html`
+                <div className="tierhead risk">⚠ 需逐条确认（${risk.length}）</div>
+                ${risk.map((it) => html`
+                  <div className=${'card ' + (selected.has(it.id) ? 'selected' : '')} key=${it.id}>
+                    <div className="head">
+                      <input type="checkbox" className="pick" checked=${selected.has(it.id)} onChange=${() => toggle(it.id)} />
+                      <div className="body">
+                        <h3>${it.title}</h3>
+                        <div className="meta">
+                          <span className="pill">${it.id}</span>
+                          <span className="pill type">${RISK_LABEL[it.type] ?? it.type}</span>
+                          <span className="grade individual">逐条审批</span>
+                          ${it.supersedes ? html`<span className="pill domain">取代 ${it.supersedes}</span>` : null}
+                        </div>
+                        ${it.summary ? html`<div className="summary">${it.summary}</div>` : null}
+                        ${it.sourceRefs ? html`<div className="evidence">证据：${it.sourceRefs}</div>` : html`<div className="evidence warn">⚠ 无证据引用</div>`}
+                      </div>
+                    </div>
+                  </div>`)}
+              ` : null}
+
+              ${safe.length > 0 ? html`
+                <div className="tierhead">可批量处理（${safe.length}）</div>
+                <div className="row" style=${{ margin: '0 0 10px' }}>
+                  <button onClick=${() => approveIds(safe.map((i) => i.id), '该组')}>全批准本组</button>
+                  <button onClick=${() => setSampleMode(batch.runId)}>抽样复核 10%</button>
+                </div>
+                ${sampleMode === batch.runId ? html`
+                  <div className="card" style=${{ borderColor: 'rgba(77,124,255,.5)' }}>
+                    <div className="summary">抽样复核：请勾选你认为有问题的条目（未勾选的将整组批准）。</div>
+                    <div className="row"><button className="primary" onClick=${() => {
+                      const unchecked = safe.filter((i) => !selected.has(i.id)).map((i) => i.id);
+                      approveIds(unchecked, '抽样后');
+                    }}>按抽样结果批准</button>
+                      <button className="ghost" onClick=${() => setSampleMode(null)}>取消</button></div>
+                  </div>` : null}
+                ${safe.map((it) => html`
+                  <div className=${'card ' + (selected.has(it.id) ? 'selected' : '')} key=${it.id}>
+                    <div className="head">
+                      <input type="checkbox" className="pick" checked=${selected.has(it.id)} onChange=${() => toggle(it.id)} />
+                      <div className="body">
+                        <h3>${it.title}</h3>
+                        <div className="meta">
+                          <span className="pill">${it.id}</span>
+                          <span className="pill type">${it.type}</span>
+                          <span className="grade batch">可批量</span>
+                        </div>
+                        ${it.summary ? html`<div className="summary">${it.summary}</div>` : null}
+                        ${it.sourceRefs ? html`<div className="evidence">证据：${it.sourceRefs}</div>` : html`<div className="evidence warn">⚠ 无证据引用</div>`}
+                      </div>
+                    </div>
+                  </div>`)}
+              ` : null}
+            ` : html`<div className="bcsummary">展开查看 ${items.length} 条（高 ${risk.length} / 低 ${safe.length}）</div>`}
+          </div>`;
+      })}
+
+      <div className="hint">整批快捷操作：<button className="mini" onClick=${() => approveIds(state.batches.flatMap((b) => b.items.filter((i) => !RISK_TYPES.has(i.type)).map((i) => i.id)), '全部低风险')}>只批准全部低风险项</button>　高风险项始终逐条。</div>
+    </div>`;
+}
+
 // ---- app shell -----------------------------------------------------------
 function App() {
   const [tab, setTab] = useState('library');
   const [pendingCount, setPendingCount] = useState(null);
+  const [distillCount, setDistillCount] = useState(null);
   const [status, setStatus] = useState(null);
 
   useEffect(() => {
@@ -692,10 +1099,16 @@ function App() {
         <button className=${tab === 'library' ? 'active' : ''} onClick=${() => setTab('library')}>
           记忆库 ${pendingCount !== null && pendingCount > 0 ? html`<span className="count">${pendingCount}</span>` : null}
         </button>
+        <button className=${tab === 'distill' ? 'active' : ''} onClick=${() => setTab('distill')}>蒸馏</button>
+        <button className=${tab === 'review' ? 'active' : ''} onClick=${() => setTab('review')}>
+          蒸馏审核 ${distillCount !== null && distillCount > 0 ? html`<span className="count">${distillCount}</span>` : null}
+        </button>
         <button className=${tab === 'audit' ? 'active' : ''} onClick=${() => setTab('audit')}>审计</button>
       </nav>
       <main>
         <div className=${'tabpane ' + (tab === 'library' ? 'active' : '')}><${MemoryPane} navCount=${setPendingCount} /></div>
+        <div className=${'tabpane ' + (tab === 'distill' ? 'active' : '')}><${DistillPane} /></div>
+        <div className=${'tabpane ' + (tab === 'review' ? 'active' : '')}><${DistillReviewPane} navCount=${setDistillCount} /></div>
         <div className=${'tabpane ' + (tab === 'audit' ? 'active' : '')}><${AuditPane} /></div>
       </main>
     </div>`;

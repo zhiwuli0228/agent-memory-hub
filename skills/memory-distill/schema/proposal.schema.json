@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-memory-hub/schema/distill-proposal.schema.json",
+  "title": "Distill proposal (one atomic candidate from a scheduled extraction run)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "title", "summary", "body", "sourceRefs", "origin", "originId"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["decision", "constraint", "knowledge", "process", "api-catalog", "open-questions", "runtime-base", "playbooks", "assets"],
+      "description": "Knowledge type. decision/constraint/api-catalog are approved one-by-one; the rest may be batched."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 120,
+      "description": "One-line conclusion. Must be understandable without the surrounding conversation."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 400,
+      "description": "Self-contained abstract written as a retrieval-friendly chunk prefix: entity + conclusion + why it matters."
+    },
+    "body": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Expanded body: 结论 / 依据 / 适用范围 / 代价与坑. Environment-specific details go into their own section."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "sourceRefs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": { "type": "string" },
+      "description": "Evidence. At least one must be a VERBATIM quote (<=200 chars), e.g. \"note: <原文片段>\". Without evidence the proposal is treated as hallucinated."
+    },
+    "origin": {
+      "const": "distill",
+      "description": "Marks scheduled-distillation output so it lands in the separate review queue."
+    },
+    "originId": {
+      "type": "string",
+      "pattern": "^RUN-[A-Za-z0-9-]+$",
+      "description": "Batch id from `memhub distill run start`; groups every proposal of one run for review and rollback."
+    },
+    "supersedes": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^KNO-[0-9]{6}$" },
+      "description": "Existing entry ids this proposal revises; approval bumps their version instead of forking a twin."
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Optional validity deadline for time-bound knowledge (aging review uses it)."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Self-reported confidence. INFORMATIONAL ONLY — do not gate auto-promotion on it (models reliably inflate it). Use verifiable signals instead: evidence count, quote presence, conflict count."
+    }
+  }
+}

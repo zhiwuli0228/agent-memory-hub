@@ -6,6 +6,7 @@ import { requireApproval } from '../../src/core/approval.js'
 import { initHub } from '../../src/core/hub.js'
 import { appendLedger, ledgerPath, readLedger } from '../../src/core/ledger.js'
 import { createState, handleRpc, TOOLS, type TransportState } from '../../src/transport/mcp.js'
+import { listProposals } from '../../src/core/store.js'
 
 function seededState(): TransportState {
   const root = mkdtempSync(join(tmpdir(), 'amh-mcp-'))
@@ -89,6 +90,29 @@ describe('MCP tools (fail-closed approval gate)', () => {
     expect(parsed.pendingCount).toBe(1)
     const config = readLedger(ledgerPath(state.hubRoot))
     expect(config[0]?.action).toBe('propose')
+  })
+
+  it('memory_propose carries origin/originId so distill output lands in its own queue (ADR-0031)', () => {
+    const state = seededState()
+    const result = call(state, 'memory_propose', {
+      type: 'knowledge',
+      title: '蒸馏产出的条目',
+      summary: '来自一次定时萃取。',
+      body: '正文。',
+      sourceRefs: ['note: 原文片段'],
+      origin: 'distill',
+      originId: 'RUN-20261129-0900-abcd',
+    })
+    expect(result.isError).toBeFalsy()
+    const pending = listProposals(state.hubRoot)
+    expect(pending[0]?.frontmatter.extra['origin']).toBe('distill')
+    expect(pending[0]?.frontmatter.extra['origin_id']).toBe('RUN-20261129-0900-abcd')
+  })
+
+  it('memory_propose without origin stays in the instant inbox', () => {
+    const state = seededState()
+    call(state, 'memory_propose', { type: 'knowledge', title: '日常条目', summary: 's', body: 'b' })
+    expect(listProposals(state.hubRoot)[0]?.frontmatter.extra['origin']).toBeUndefined()
   })
 
   it('memory_commit over MCP ALWAYS fails closed with E_APPROVAL_REQUIRED + approval.missing record', () => {

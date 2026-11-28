@@ -74,6 +74,96 @@ describe('panel API', () => {
     expect(body.acceptedCount).toBe(0)
   })
 
+  it('distill-origin proposals are split out of the instant inbox (ADR-0031)', () => {
+    const { state, root } = seededState()
+    propose(root, 'knowledge', '日常即时提案')
+    // A distill proposal carries origin=distill + origin_id=<run>.
+    const distillId = createProposal(
+      root,
+      {
+        type: 'knowledge',
+        title: '蒸馏提案',
+        summary: 's',
+        scope: { level: 'project', workspaceId: 'acme-app' },
+        tags: [],
+        body: 'b',
+        sourceRefs: ['note:distill'],
+        actor: 'model',
+        origin: 'distill',
+        originId: 'RUN-20261129-0900-abcd',
+      },
+      ledgerHelpers(),
+    ).id
+
+    const all = handleApi(state, 'GET', '/api/inbox').body as {
+      proposals: Array<{ id: string; queue: string; origin: string | null; originId: string | null }>
+      queues: { inbox: number; distill: number }
+    }
+    expect(all.queues).toEqual({ inbox: 1, distill: 1 })
+    expect(all.proposals.find((p) => p.id === distillId)?.queue).toBe('distill')
+    expect(all.proposals.find((p) => p.id === distillId)?.originId).toBe('RUN-20261129-0900-abcd')
+
+    // The instant inbox filters its own list.
+    const instant = handleApi(state, 'GET', '/api/inbox', { queue: 'inbox' }).body as { proposals: Array<{ id: string }> }
+    expect(instant.proposals.map((p) => p.id)).not.toContain(distillId)
+
+    // The distill queue groups by run and carries the run record alongside.
+    handleApi(state, 'POST', '/api/distill/run', { action: 'start', runId: 'RUN-20261129-0900-abcd' })
+    const queue = handleApi(state, 'GET', '/api/distill/queue').body as {
+      total: number
+      batches: Array<{ runId: string; items: Array<{ id: string }>; run: { id: string; status: string } | null }>
+    }
+    expect(queue.total).toBe(1)
+    expect(queue.batches[0]?.runId).toBe('RUN-20261129-0900-abcd')
+    expect(queue.batches[0]?.items[0]?.id).toBe(distillId)
+    expect(queue.batches[0]?.run?.id).toBe('RUN-20261129-0900-abcd')
+  })
+
+  it('distill config and run status round-trip through the API', () => {
+    const { state } = seededState()
+    const before = handleApi(state, 'GET', '/api/distill').body as { config: { enabled: boolean }; nextAt: string | null; due: boolean }
+    expect(before.config.enabled).toBe(false)
+    expect(before.nextAt).toBeNull()
+    expect(before.due).toBe(false)
+
+    const saved = handleApi(state, 'POST', '/api/distill/config', {
+      config: { enabled: true, schedule: { mode: 'daily', at: '07:30', timezone: 'Asia/Shanghai' } },
+    })
+    expect(saved.status).toBe(200)
+    const after = handleApi(state, 'GET', '/api/distill').body as {
+      config: { enabled: boolean; schedule: { mode: string; at: string } }
+      nextAt: string | null
+      runs: unknown[]
+    }
+    expect(after.config.enabled).toBe(true)
+    expect(after.config.schedule.at).toBe('07:30')
+    expect(after.nextAt).not.toBeNull()
+
+    // Run bookkeeping is idempotent by run id.
+    const first = handleApi(state, 'POST', '/api/distill/run', { action: 'start', runId: 'RUN-X' }).body as { run: { status: string }; resumed?: boolean }
+    expect(first.run.status).toBe('extracting')
+    const second = handleApi(state, 'POST', '/api/distill/run', { action: 'start', runId: 'RUN-X' }).body as { resumed?: boolean }
+    expect(second.resumed).toBe(true)
+    const finished = handleApi(state, 'POST', '/api/distill/run', { action: 'finish', runId: 'RUN-X', counts: { proposed: 3 } }).body as {
+      run: { status: string; counts: { proposed: number } }
+    }
+    expect(finished.run.status).toBe('staged')
+    expect(finished.run.counts.proposed).toBe(3)
+    // Missing runId is a validation error, not a crash.
+    expect(handleApi(state, 'POST', '/api/distill/run', { action: 'start' }).status).toBe(400)
+  })
+
+  it('batch rejection removes several proposals in one call', () => {
+    const { state, root } = seededState()
+    const idA = propose(root, 'knowledge', '批量拒绝A')
+    const idB = propose(root, 'knowledge', '批量拒绝B')
+    const response = handleApi(state, 'POST', '/api/inbox/reject', { ids: [idA, idB], note: '蒸馏批次整体不合格' })
+    expect(response.status).toBe(200)
+    expect((response.body as { rejected: number }).rejected).toBe(2)
+    expect(existsSync(join(root, 'pending', `${idA}.md`))).toBe(false)
+    expect(existsSync(join(root, 'pending', `${idB}.md`))).toBe(false)
+  })
+
   it('inbox lists pending proposals with their grade', () => {
     const { state, root } = seededState()
     propose(root, 'decision', '逐条审批的决策')
@@ -195,6 +285,31 @@ describe('panel API', () => {
     expect(PANEL_HTML).toContain('restoreDetail')
     expect(PANEL_HTML).toContain('/restore')
     expect(PANEL_HTML).toContain('恢复为已审核')
+  })
+
+  it('panel exposes scheduled distillation and a SEPARATE distill review queue (ADR-0031)', () => {
+    // Two new level-1 tabs: configuration and the second review queue.
+    expect(PANEL_HTML).toContain('function DistillPane')
+    expect(PANEL_HTML).toContain('function DistillReviewPane')
+    expect(PANEL_HTML).toContain('蒸馏审核')
+    // The schedule is configured as structured data in the UI, not a cron string.
+    expect(PANEL_HTML).toContain('定时蒸馏配置')
+    expect(PANEL_HTML).toContain('下次触发')
+    expect(PANEL_HTML).toContain('立即试运行')
+    expect(PANEL_HTML).toContain('daybtn')
+    expect(PANEL_HTML).not.toMatch(/\*\s+\*\s+\*\s+/) // no cron expression in the panel
+    // Runs carry an identity the reviewer can act on.
+    expect(PANEL_HTML).toContain('运行历史')
+    expect(PANEL_HTML).toContain('promptVersion')
+    // Batch card + risk tiers: high-risk items are never batch-approvable.
+    expect(PANEL_HTML).toContain('batchcard')
+    expect(PANEL_HTML).toContain('需逐条确认')
+    expect(PANEL_HTML).toContain('可批量处理')
+    expect(PANEL_HTML).toContain('抽样复核')
+    // Evidence must be visible at review time (anti hallucination gate).
+    expect(PANEL_HTML).toContain('className="evidence')
+    // The instant inbox must filter distill proposals out of its own list.
+    expect(PANEL_HTML).toContain("p.queue !== 'distill'")
   })
 
   it('panel <script> is valid JavaScript — a stray real newline inside a string literal breaks the whole console', () => {

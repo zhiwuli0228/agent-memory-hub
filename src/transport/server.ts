@@ -5,6 +5,19 @@ import { readHubConfig } from '../core/hub.js'
 import { appendLedger, ledgerPath, readSequences, writeSequences } from '../core/ledger.js'
 import { acquireLock, assertFencing, lockInfo, releaseLock } from '../core/lock.js'
 import { commitKnowledge, commitProposal, createProposal, deprecateEntry, getEntry, hardDeleteEntry, listEntries, listProposals, restoreEntry } from '../core/store.js'
+import {
+  DISTILL_PROMPT_VERSION,
+  computeDistillStatus,
+  emptyRunCounts,
+  listRuns,
+  readDistillConfig,
+  readRun,
+  writeDistillConfig,
+  writeRun,
+  type DistillRun,
+  type DistillRunCounts,
+} from '../core/distill.js'
+import { readExtractState } from '../core/extract.js'
 import { buildIndex, emptyMetrics, search, type SearchIndex, type SearchMetrics } from '../core/search.js'
 
 /**
@@ -127,27 +140,148 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
           metrics: state.metrics,
           acceptedCount: listEntries(state.hubRoot).length,
         })
+      case 'GET /api/distill': {
+        // ADR-0031: one call backs the whole 蒸馏 tab — schedule config, next
+        // trigger, last run, run history and the two silent-failure signals.
+        const pendingDistill = listProposals(state.hubRoot).filter((p) => p.frontmatter.extra['origin'] === 'distill')
+        const status = computeDistillStatus(state.hubRoot, { queueDepth: pendingDistill.length })
+        return ok({ ...status, runs: listRuns(state.hubRoot, 20), promptVersion: DISTILL_PROMPT_VERSION })
+      }
+      case 'POST /api/distill/config': {
+        // Save the schedule from the panel. Config data, never a cron string.
+        return withWriteLock(state.hubRoot, () => {
+          const saved = writeDistillConfig(state.hubRoot, body?.['config'] ?? body ?? {})
+          const status = computeDistillStatus(state.hubRoot)
+          return ok({ ok: true, config: saved, nextAt: status.nextAt, due: status.due, reasons: status.reasons })
+        })
+      }
+      case 'GET /api/distill/runs':
+        return ok({ runs: listRuns(state.hubRoot, Number(body?.['limit']) || 20) })
+      case 'POST /api/distill/run': {
+        // Bookkeeping endpoints the skill calls around an extraction. The hub
+        // deliberately does NOT run the model: the host does that, then reports
+        // the outcome here so the run has an identity the reviewer can act on.
+        return withWriteLock(state.hubRoot, () => {
+          const action = String(body?.['action'] ?? '')
+          const runId = String(body?.['runId'] ?? '')
+          if (runId === '') throw new HubError(ErrorCode.E_VALIDATION, 'runId is required', { action })
+          const existing = readRun(state.hubRoot, runId)
+          if (action === 'start') {
+            if (existing !== null) {
+              // Idempotent resume: same run id means the caller re-ran by mistake.
+              return ok({ ok: true, resumed: true, run: existing })
+            }
+            const watermark = readExtractState(state.hubRoot).lastExtractedAt
+            const config = readDistillConfig(state.hubRoot)
+            const run: DistillRun = {
+              id: runId,
+              status: 'extracting',
+              trigger: String(body?.['trigger'] ?? 'manual'),
+              startedAt: new Date().toISOString(),
+              window: {
+                from: watermark,
+                to: String(body?.['to'] ?? new Date().toISOString()),
+                maxHours: config.window.maxHours,
+                maxEvents: config.window.maxEvents,
+              },
+              ...(typeof body?.['model'] === 'string' ? { model: body['model'] as string } : {}),
+              promptVersion: typeof body?.['promptVersion'] === 'string' ? (body['promptVersion'] as string) : DISTILL_PROMPT_VERSION,
+              counts: emptyRunCounts(),
+              watermarkBefore: watermark,
+            }
+            return ok({ ok: true, run: writeRun(state.hubRoot, run) })
+          }
+          if (existing === null) throw new HubError(ErrorCode.E_NOT_FOUND, `distill run not found: ${runId}`, { runId })
+          if (action === 'finish') {
+            const finishedAt = new Date().toISOString()
+            const countsRaw = (typeof body?.['counts'] === 'object' && body['counts'] !== null ? body['counts'] : {}) as Record<string, unknown>
+            const counts: DistillRunCounts = {
+              candidates: Number(countsRaw['candidates'] ?? 0) || 0,
+              proposed: Number(countsRaw['proposed'] ?? 0) || 0,
+              approved: Number(countsRaw['approved'] ?? 0) || 0,
+              rejected: Number(countsRaw['rejected'] ?? 0) || 0,
+              deferred: Number(countsRaw['deferred'] ?? 0) || 0,
+              autoPromoted: Number(countsRaw['autoPromoted'] ?? 0) || 0,
+            }
+            const next: DistillRun = {
+              ...existing,
+              status: 'staged',
+              finishedAt,
+              durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(existing.startedAt)),
+              counts,
+            }
+            return ok({ ok: true, run: writeRun(state.hubRoot, next) })
+          }
+          if (action === 'fail') {
+            const next: DistillRun = {
+              ...existing,
+              status: 'failed',
+              finishedAt: new Date().toISOString(),
+              error: typeof body?.['error'] === 'string' ? (body['error'] as string) : 'unspecified failure',
+            }
+            return ok({ ok: true, run: writeRun(state.hubRoot, next) })
+          }
+          throw new HubError(ErrorCode.E_VALIDATION, `unknown distill run action: ${action}`, { action })
+        })
+      }
+      case 'GET /api/distill/queue': {
+        // The second review queue: only distill-origin proposals, grouped by run.
+        const all = listProposals(state.hubRoot).filter((p) => p.frontmatter.extra['origin'] === 'distill')
+        const grouped: Record<string, Array<Record<string, unknown>>> = {}
+        for (const p of all) {
+          const runId = typeof p.frontmatter.extra['origin_id'] === 'string' ? (p.frontmatter.extra['origin_id'] as string) : '(no-run)'
+          const item = {
+            id: p.id,
+            type: p.frontmatter.type,
+            title: p.frontmatter.title,
+            summary: p.frontmatter.summary,
+            tags: p.frontmatter.tags,
+            grade: gradeFor(p.frontmatter.type),
+            sourceRefs: typeof p.frontmatter.extra['source_refs'] === 'string' ? p.frontmatter.extra['source_refs'] : '',
+            supersedes: typeof p.frontmatter.extra['supersedes'] === 'string' ? p.frontmatter.extra['supersedes'] : null,
+            path: p.path,
+          }
+          ;(grouped[runId] ??= []).push(item)
+        }
+        const batches = Object.entries(grouped).map(([runId, items]) => ({ runId, items, run: readRun(state.hubRoot, runId) }))
+        batches.sort((a, b) => ((a.run?.startedAt ?? '') < (b.run?.startedAt ?? '') ? 1 : -1))
+        return ok({ total: all.length, batches })
+      }
       case 'GET /api/inbox': {
         // ADR-0021: large-team triage — group by domain so each domain's
         // reviewer sees their slice; ?domain= narrows to one slice.
+        // ADR-0031: `origin`/`origin_id`/`queue` are exposed so the panel can
+        // split the instant inbox from the scheduled-distillation queue — the
+        // two have different review contexts and must not share one list.
         const domainFilter = body?.['domain']
-        const proposals = listProposals(state.hubRoot).map((p) => ({
-          id: p.id,
-          type: p.frontmatter.type,
-          title: p.frontmatter.title,
-          summary: p.frontmatter.summary,
-          tags: p.frontmatter.tags,
-          domain: p.frontmatter.scope.level === 'domain' ? p.frontmatter.scope.domainId : null,
-          grade: gradeFor(p.frontmatter.type),
-          path: p.path,
-        }))
-        const filtered = typeof domainFilter === 'string' && domainFilter !== '' ? proposals.filter((p) => p.domain === domainFilter) : proposals
+        const queueFilter = body?.['queue']
+        const proposals = listProposals(state.hubRoot).map((p) => {
+          const origin = typeof p.frontmatter.extra['origin'] === 'string' ? (p.frontmatter.extra['origin'] as string) : null
+          const originId = typeof p.frontmatter.extra['origin_id'] === 'string' ? (p.frontmatter.extra['origin_id'] as string) : null
+          return {
+            id: p.id,
+            type: p.frontmatter.type,
+            title: p.frontmatter.title,
+            summary: p.frontmatter.summary,
+            tags: p.frontmatter.tags,
+            domain: p.frontmatter.scope.level === 'domain' ? p.frontmatter.scope.domainId : null,
+            grade: gradeFor(p.frontmatter.type),
+            path: p.path,
+            origin,
+            originId,
+            queue: origin === 'distill' ? 'distill' : 'inbox',
+          }
+        })
+        const byDomain = typeof domainFilter === 'string' && domainFilter !== '' ? proposals.filter((p) => p.domain === domainFilter) : proposals
+        const filtered = queueFilter === 'distill' || queueFilter === 'inbox' ? byDomain.filter((p) => p.queue === queueFilter) : byDomain
         const groups: Record<string, number> = {}
         for (const p of proposals) {
           const key = p.domain ?? '(no-domain)'
           groups[key] = (groups[key] ?? 0) + 1
         }
-        return ok({ proposals: filtered, groups, total: proposals.length })
+        const queues = { inbox: 0, distill: 0 }
+        for (const p of proposals) queues[p.queue === 'distill' ? 'distill' : 'inbox'] += 1
+        return ok({ proposals: filtered, groups, total: proposals.length, queues })
       }
       case 'GET /api/search': {
         // ADR-0018 read side: remote consumers (WeKnora-style integrations,
@@ -301,6 +435,19 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
     const rejectMatch = /^\/api\/inbox\/([A-Za-z0-9-]+)\/reject$/.exec(path)
     if (rejectMatch !== null && method === 'POST') {
       return reject(state, rejectMatch[1] ?? '', body)
+    }
+    const batchRejectMatch = /^\/api\/inbox\/reject$/.exec(path)
+    if (batchRejectMatch !== null && method === 'POST') {
+      // ADR-0031: the distill review queue rejects in batches (low-risk group),
+      // same reject primitive as a single proposal — no second code path.
+      const ids = body?.['ids']
+      if (!Array.isArray(ids) || ids.length === 0) return bad(400, 'ids array is required for batch rejection')
+      const rejected: string[] = []
+      for (const id of ids.map(String)) {
+        const r = reject(state, id, body)
+        if (r.status === 200) rejected.push(id)
+      }
+      return ok({ rejected: rejected.length, ids: rejected })
     }
     const entryMatch = /^\/api\/entries\/([A-Za-z0-9-]+)$/.exec(path)
     if (entryMatch !== null && method === 'GET') {

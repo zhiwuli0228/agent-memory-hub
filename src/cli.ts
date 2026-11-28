@@ -20,7 +20,19 @@ import { createApiState } from './transport/server.js'
 import { autoCommit } from './transport/autocommit.js'
 import { startServer, serverUrl } from './transport/http.js'
 import { createState, handleRpc, serveStdio, TOOLS, type TransportState } from './transport/mcp.js'
+import { gradeFor } from './transport/server.js'
 import { buildExtractionMaterial, readExtractState, writeExtractState } from './core/extract.js'
+import {
+  DISTILL_PROMPT_VERSION,
+  computeDistillStatus,
+  emptyRunCounts,
+  listRuns,
+  readDistillConfig,
+  readRun,
+  writeDistillConfig,
+  writeRun,
+  type DistillRun,
+} from './core/distill.js'
 
 /**
  * memhub CLI — same core, same behavior as the MCP tools (one behavior, one
@@ -53,6 +65,14 @@ interface CliArgs {
   teamRepo?: string
   deptRepo?: string
   domainTokens?: string
+  /** distill: run identity (`--run-id`) and structured payloads. */
+  runId?: string
+  trigger?: string
+  meta?: string
+  counts?: string
+  error?: string
+  /** distill config: inline JSON patch */
+  set?: string
 }
 
 /** Recursive directory collector (titleCache mtime bump after pull). */
@@ -242,6 +262,30 @@ function parseArgs(argv: string[]): CliArgs {
         break
       case '--domain-tokens':
         args.domainTokens = argv[i + 1]
+        i += 1
+        break
+      case '--run-id':
+        args.runId = argv[i + 1]
+        i += 1
+        break
+      case '--trigger':
+        args.trigger = argv[i + 1]
+        i += 1
+        break
+      case '--meta':
+        args.meta = argv[i + 1]
+        i += 1
+        break
+      case '--counts':
+        args.counts = argv[i + 1]
+        i += 1
+        break
+      case '--error':
+        args.error = argv[i + 1]
+        i += 1
+        break
+      case '--set':
+        args.set = argv[i + 1]
         i += 1
         break
       default:
@@ -560,6 +604,132 @@ export function main(argv: string[]): number {
           nextStep: '打开面板或 memhub inbox list 逐组处理；duplicate 批准时携带 supersedes，aging 复审后 deprecate 或续期',
         })
         return 0
+      }
+      case 'distill': {
+        // ADR-0031: scheduled distillation. The hub owns the schedule, the run
+        // record and the review queue; the host agent owns the model. Every
+        // subcommand here is safe for a skill to call.
+        const root = requireHub(args)
+        const sub = args._[1]
+
+        const distillQueueItems = (): Array<Record<string, unknown>> =>
+          listProposals(root)
+            .filter((p) => p.frontmatter.extra['origin'] === 'distill')
+            .map((p) => ({
+              id: p.id,
+              type: p.frontmatter.type,
+              title: p.frontmatter.title,
+              runId: typeof p.frontmatter.extra['origin_id'] === 'string' ? p.frontmatter.extra['origin_id'] : null,
+              grade: gradeFor(p.frontmatter.type),
+            }))
+
+        if (sub === 'status' || sub === undefined) {
+          const queue = distillQueueItems()
+          const status = computeDistillStatus(root, { queueDepth: queue.length })
+          out({ ...status, queue }, args.json)
+          return 0
+        }
+        if (sub === 'due') {
+          const queue = distillQueueItems()
+          const status = computeDistillStatus(root, { queueDepth: queue.length })
+          out({ due: status.due, nextAt: status.nextAt, reasons: status.reasons, zeroOutputStreak: status.zeroOutputStreak }, true)
+          return status.due ? 0 : 1
+        }
+        if (sub === 'config') {
+          if (args.set !== undefined) {
+            const parsed = JSON.parse(args.set as string) as unknown
+            const saved = writeDistillConfig(root, parsed)
+            const status = computeDistillStatus(root)
+            out({ ok: true, config: saved, nextAt: status.nextAt, due: status.due, reasons: status.reasons }, args.json)
+            return 0
+          }
+          out(readDistillConfig(root), true)
+          return 0
+        }
+        if (sub === 'queue') {
+          const items = distillQueueItems()
+          const grouped: Record<string, Array<Record<string, unknown>>> = {}
+          for (const it of items) {
+            const key = typeof it['runId'] === 'string' ? (it['runId'] as string) : '(no-run)'
+            ;(grouped[key] ??= []).push(it)
+          }
+          const batches = Object.entries(grouped).map(([runId, list]) => ({ runId, items: list, run: readRun(root, runId) }))
+          out({ total: items.length, batches }, true)
+          return 0
+        }
+        if (sub === 'run') {
+          const action = args._[2]
+          const runId = args.runId ?? ''
+          if (action === 'list') {
+            out({ runs: listRuns(root, 20) }, true)
+            return 0
+          }
+          if (runId === '') throw new HubError(ErrorCode.E_VALIDATION, 'usage: memhub distill run <start|finish|fail|list> [--run-id <id>]')
+          if (action === 'start') {
+            const existing = readRun(root, runId)
+            if (existing !== null) {
+              out({ ok: true, resumed: true, run: existing }, args.json)
+              return 0
+            }
+            const watermark = readExtractState(root).lastExtractedAt
+            const config = readDistillConfig(root)
+            const meta = args.meta !== undefined ? (JSON.parse(args.meta) as Record<string, unknown>) : {}
+            const run: DistillRun = {
+              id: runId,
+              status: 'extracting',
+              trigger: args.trigger ?? 'manual',
+              startedAt: new Date().toISOString(),
+              window: { from: watermark, to: new Date().toISOString(), maxHours: config.window.maxHours, maxEvents: config.window.maxEvents },
+              ...(typeof meta['model'] === 'string' ? { model: meta['model'] } : {}),
+              promptVersion: typeof meta['promptVersion'] === 'string' ? meta['promptVersion'] : DISTILL_PROMPT_VERSION,
+              counts: emptyRunCounts(),
+              watermarkBefore: watermark,
+            }
+            out({ ok: true, run: writeRun(root, run) }, args.json)
+            return 0
+          }
+          const existing = readRun(root, runId)
+          if (existing === null) throw new HubError(ErrorCode.E_NOT_FOUND, `distill run not found: ${runId}`, { runId })
+          if (action === 'finish') {
+            const finishedAt = new Date().toISOString()
+            const raw = args.counts !== undefined ? (JSON.parse(args.counts) as Record<string, unknown>) : {}
+            const num = (key: string): number => {
+              const v = Number(raw[key] ?? 0)
+              return Number.isFinite(v) && v > 0 ? v : 0
+            }
+            const run: DistillRun = {
+              ...existing,
+              status: 'staged',
+              finishedAt,
+              durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(existing.startedAt)),
+              counts: {
+                candidates: num('candidates'),
+                proposed: num('proposed'),
+                approved: num('approved'),
+                rejected: num('rejected'),
+                deferred: num('deferred'),
+                autoPromoted: num('autoPromoted'),
+              },
+            }
+            out({ ok: true, run: writeRun(root, run) }, args.json)
+            return 0
+          }
+          if (action === 'fail') {
+            const run: DistillRun = {
+              ...existing,
+              status: 'failed',
+              finishedAt: new Date().toISOString(),
+              error: args.error ?? 'unspecified failure',
+            }
+            out({ ok: true, run: writeRun(root, run) }, args.json)
+            return 0
+          }
+          throw new HubError(ErrorCode.E_VALIDATION, `unknown distill run action: ${String(action)}`)
+        }
+        throw new HubError(
+          ErrorCode.E_VALIDATION,
+          'usage: memhub distill <status|due|config|run|queue>\n  status: config + next trigger + due + last run + queue depth\n  due:    exit 0 when a run is due\n  config: print (or --set <json> patch) the schedule\n  run:    start|finish|fail|list — give each extraction a run identity\n  queue:  distill-origin proposals grouped by run (the second review queue)',
+        )
       }
       case 'sync': {
         const root = requireHub(args)
@@ -1297,6 +1467,24 @@ function printHelp(): void {
   memhub curate [--json]              governance for the pending queue: dedupe /
                                       merge / aging review (writes reports/);
                                       schedule it with any cron or DSH task
+  memhub distill status [--json]      scheduled-distillation state: config, next
+                                      trigger, whether a run is due, last run,
+                                      queue depth (ADR-0031)
+  memhub distill due [--json]         exit 0 when a run is due, 1 when it is not
+                                      (a scheduler uses this instead of parsing)
+  memhub distill run start --run-id ID [--trigger schedule|manual|catchup]
+                                      open a run record (idempotent by run id)
+  memhub distill run finish --run-id ID [--proposed N] [--candidates N]
+                                      mark the run staged: proposals are waiting
+                                      for the 蒸馏审核 queue
+  memhub distill run fail --run-id ID [--error text]
+                                      record a failed run (feeds the silent-
+                                      failure counter)
+  memhub distill run list [--json]    recent runs, newest first
+  memhub distill queue [--json]       distill-origin proposals grouped by run
+  memhub distill config [--json]      print the effective schedule config
+  memhub distill config --set <json>  patch the schedule config (structured object,
+                                      never a cron string)
   memhub hub <push|pull> --remote <central-serve-url> [--since iso]
                                       ADR-0012 hub-to-hub sync: push local approved entries
                                       as central proposals (central inbox = review gate);
@@ -1336,3 +1524,5 @@ if (invokedDirectly && process.argv.length > 2) {
 }
 
 export { createState, handleRpc, type TransportState, readHubConfig, readLedger, registerWorkspace, LEDGER_FILE }
+
+

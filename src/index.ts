@@ -118,6 +118,28 @@ export { startServer, serverUrl, type ServeOptions } from './transport/http.js'
 export { createApiState, gradeFor, type ApiState, type ApprovalGrade } from './transport/server.js'
 
 // Curation analysis (ADR-0017): dedupe / merge / aging review for scheduled
+// Scheduled distillation (ADR-0031): schedule config + run records.
+export {
+  DISTILL_PROMPT_VERSION,
+  computeDistillStatus,
+  defaultDistillConfig,
+  listRuns,
+  newRunId,
+  normalizeDistillConfig,
+  readDistillConfig,
+  readRun,
+  writeDistillConfig,
+  writeRun,
+} from './core/distill.js'
+export type {
+  DistillConfig,
+  DistillRun,
+  DistillRunCounts,
+  DistillRunStatus,
+  DistillSchedule,
+  DistillStatus,
+} from './core/distill.js'
+
 // extraction runs. Pure analysis — the human gate does the landing.
 export {
   analyzeCurate,
