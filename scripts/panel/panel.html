@@ -441,8 +441,15 @@ function MemoryPane({ navCount }) {
     refresh();
     openEntry(detail.id);
   };
-  const hardDelete = async () => {
-    if (!window.confirm('永久删除 ' + detail.id + ' 不可恢复，确认？')) return;
+  const restoreDetail = async () => {
+    const reason = reason.trim() || '恢复为已审核';
+    const r = await j('/api/entries/' + encodeURIComponent(detail.id) + '/restore', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }) });
+    if (!r.ok) { toast('恢复失败：' + (r.data?.error ?? ('HTTP ' + r.status)), 'err'); return; }
+    toast('已恢复 ' + detail.id + ' → 已审核', 'ok');
+    refresh();
+    openEntry(detail.id);
+  };
+  const hardDelete = async () => {    if (!window.confirm('永久删除 ' + detail.id + ' 不可恢复，确认？')) return;
     if (!reason.trim()) { toast('请填写删除原因', 'err'); return; }
     const r = await j('/api/entries/' + encodeURIComponent(detail.id) + '/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }) });
     if (!r.ok) { toast('删除失败：' + (r.data?.error ?? ('HTTP ' + r.status)), 'err'); return; }
@@ -472,6 +479,16 @@ function MemoryPane({ navCount }) {
     if (!r.ok) { toast('删除失败：' + (r.data?.error ?? ('HTTP ' + r.status)), 'err'); return; }
     toast('已永久删除 ' + item.id + '（账本留痕）', 'ok');
     if (detail && detail.id === item.id) { setDetail(null); setEditing(false); }
+    refresh();
+  };
+  const restoreInline = async (ev, item) => {
+    ev.stopPropagation();
+    const why = window.prompt('恢复 ' + item.id + '「' + item.title + '」为已审核，原因（可留空）：', '');
+    if (why === null) return; // 用户取消
+    const reason = why.trim() || '恢复为已审核';
+    const r = await j('/api/entries/' + encodeURIComponent(item.id) + '/restore', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }) });
+    if (!r.ok) { toast('恢复失败：' + (r.data?.error ?? ('HTTP ' + r.status)), 'err'); return; }
+    toast('已恢复 ' + item.id + ' → 已审核', 'ok');
     refresh();
   };
 
@@ -567,7 +584,8 @@ function MemoryPane({ navCount }) {
           <span className="pill type">${typeLabel(typeOf(it))}</span>
           <span className="entryacts">
             ${it.status === 'deprecated'
-              ? html`<button className="mini danger" title="永久删除这条已废弃记忆" onClick=${(ev) => deleteInline(ev, it)}>删除</button>`
+              ? html`<button className="mini" title="恢复为已审核" onClick=${(ev) => restoreInline(ev, it)}>恢复</button>
+                     <button className="mini danger" title="永久删除这条已废弃记忆" onClick=${(ev) => deleteInline(ev, it)}>删除</button>`
               : html`<button className="mini" title="手动废弃这条已审核记忆" onClick=${(ev) => deprecateInline(ev, it)}>废弃</button>`}
           </span>
         </div>`)}
@@ -596,8 +614,11 @@ function MemoryPane({ navCount }) {
             <input type="text" value=${reason} onChange=${(e) => setReason(e.target.value)} placeholder="填写后操作" />
             <div className="row">
               <button className="primary" onClick=${startEdit}>编辑（重新萃取）</button>
-              <button className="danger" onClick=${deprecateEntry}>废弃（软删除）</button>
-              <button className="danger" onClick=${hardDelete}>永久删除（不可恢复）</button>
+              ${detail.frontmatter.status === 'deprecated'
+                ? html`<button onClick=${restoreDetail}>恢复为已审核</button>
+                       <button className="danger" onClick=${hardDelete}>永久删除（不可恢复）</button>`
+                : html`<button className="danger" onClick=${deprecateEntry}>废弃（软删除）</button>
+                       <button className="danger" onClick=${hardDelete}>永久删除（不可恢复）</button>`}
               <button onClick=${() => setDetail(null)}>关闭</button>
             </div>`}
         </div>` : null}

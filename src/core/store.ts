@@ -509,6 +509,30 @@ export function deprecateEntry(
   })
 }
 
+/** Undo a deprecation: status back to accepted + ledger record. */
+export function restoreEntry(
+  root: string,
+  id: string,
+  reason: string,
+  helpers: {
+    nowIsoValue?: string
+    appendLedger: (root: string, record: LedgerRecord) => void
+  },
+): void {
+  const entry = getEntry(root, id)
+  const ts = helpers.nowIsoValue ?? nowIso()
+  const fm: KnowledgeFrontmatter = { ...entry.frontmatter, status: 'accepted', updated: ts }
+  atomicWrite(entry.path, renderKnowledgeMarkdown(fm, entry.body))
+  helpers.appendLedger(root, {
+    ts,
+    actor: 'human',
+    action: 'restore',
+    id,
+    version: entry.frontmatter.version,
+    note: reason,
+  })
+}
+
 /** Hard delete (GDPR path): explicit caller authorization required; ledger first, then unlink. */
 export function hardDeleteEntry(
   root: string,

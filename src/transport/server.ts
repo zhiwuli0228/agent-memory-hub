@@ -4,7 +4,7 @@ import { ErrorCode, HubError } from '../core/errors.js'
 import { readHubConfig } from '../core/hub.js'
 import { appendLedger, ledgerPath, readSequences, writeSequences } from '../core/ledger.js'
 import { acquireLock, assertFencing, lockInfo, releaseLock } from '../core/lock.js'
-import { commitKnowledge, commitProposal, createProposal, deprecateEntry, getEntry, hardDeleteEntry, listEntries, listProposals } from '../core/store.js'
+import { commitKnowledge, commitProposal, createProposal, deprecateEntry, getEntry, hardDeleteEntry, listEntries, listProposals, restoreEntry } from '../core/store.js'
 import { buildIndex, emptyMetrics, search, type SearchIndex, type SearchMetrics } from '../core/search.js'
 
 /**
@@ -317,6 +317,18 @@ export function handleApi(state: ApiState, method: string, path: string, body?: 
         state.index = buildIndex(state.hubRoot, () => new Date().toISOString())
         state.metrics = emptyMetrics(state.index)
         return ok({ deprecated: deprecateMatch[1] ?? '', reason, git: autoCommit(state.hubRoot, `deprecate: ${deprecateMatch[1]} (${reason})`) })
+      })
+    }
+    const restoreMatch = /^\/api\/entries\/([A-Za-z0-9-]+)\/restore$/.exec(path)
+    if (restoreMatch !== null && method === 'POST') {
+      const reason = typeof body?.['reason'] === 'string' && body['reason'] !== '' ? body['reason'] : 'restored via panel'
+      return withWriteLock(state.hubRoot, () => {
+        restoreEntry(state.hubRoot, restoreMatch[1] ?? '', reason, {
+          appendLedger: (root, record) => appendLedger(ledgerPath(root), record),
+        })
+        state.index = buildIndex(state.hubRoot, () => new Date().toISOString())
+        state.metrics = emptyMetrics(state.index)
+        return ok({ restored: restoreMatch[1] ?? '', reason, git: autoCommit(state.hubRoot, `restore: ${restoreMatch[1]} (${reason})`) })
       })
     }
     const deleteMatch = /^\/api\/entries\/([A-Za-z0-9-]+)\/delete$/.exec(path)

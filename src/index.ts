@@ -59,6 +59,7 @@ export {
   createProposal,
   deprecateEntry,
   hardDeleteEntry,
+  restoreEntry,
   findTitleConflict,
   getEntry,
   listEntries,

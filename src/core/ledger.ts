@@ -16,6 +16,7 @@ export type LedgerAction =
   | 'reject'
   | 'update'
   | 'deprecate'
+  | 'restore'
   | 'delete'
   | 'register-workspace'
   | 'conflict-freeze'

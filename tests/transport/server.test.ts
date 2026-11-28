@@ -190,6 +190,11 @@ describe('panel API', () => {
     expect(PANEL_HTML).toContain('请填写删除原因')
     // 已取代 is surfaced as its own badge instead of looking accepted.
     expect(PANEL_HTML).toContain('已取代')
+    // Deprecated entries can be restored — inline and from the detail pane.
+    expect(PANEL_HTML).toContain('restoreInline')
+    expect(PANEL_HTML).toContain('restoreDetail')
+    expect(PANEL_HTML).toContain('/restore')
+    expect(PANEL_HTML).toContain('恢复为已审核')
   })
 
   it('panel <script> is valid JavaScript — a stray real newline inside a string literal breaks the whole console', () => {
@@ -245,6 +250,22 @@ describe('panel API', () => {
       // Deprecated entries stay visible with includeSoftRemoved in /api/entries.
       const list = handleApi(state, 'GET', '/api/entries')
       expect((list.body as { entries: Array<{ status: string }> }).entries[0]?.status).toBe('deprecated')
+    })
+
+    it('restore undoes a deprecation (status back to accepted, ledger records it)', () => {
+      const { state, root } = seededState()
+      const id = propose(root, 'knowledge', '废弃后可恢复')
+      handleApi(state, 'POST', `/api/inbox/${id}/approve`)
+      const committed = (handleApi(state, 'GET', '/api/entries').body as { entries: Array<{ id: string }> }).entries[0]?.id
+      handleApi(state, 'POST', `/api/entries/${committed}/deprecate`, { reason: '误废' })
+      const restored = handleApi(state, 'POST', `/api/entries/${committed}/restore`, { reason: '恢复正确内容' })
+      expect(restored.status).toBe(200)
+      const detail = handleApi(state, 'GET', `/api/entries/${committed}`)
+      expect((detail.body as { frontmatter: { status: string } }).frontmatter.status).toBe('accepted')
+      const actions = listLedger(root).map((r) => r['action'])
+      expect(actions).toContain('deprecate')
+      expect(actions).toContain('restore')
+      expect(listLedger(root).some((r) => r['action'] === 'restore' && r['note'] === '恢复正确内容')).toBe(true)
     })
 
     it('hard delete physically removes the file but leaves a ledger trace', () => {
