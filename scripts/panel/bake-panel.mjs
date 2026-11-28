@@ -28,6 +28,19 @@ for (const [name, src] of [['react', react], ['react-dom', reactDom], ['htm', ht
   if (src.includes('</script')) throw new Error(`vendor ${name} contains '</script' — cannot inline`)
 }
 
+// API-surface guards: react-dom references `Ba.unstable_requestPaint` as its
+// paint scheduler (minified as `Sk=Ba.unstable_requestPaint`). A truncated
+// react copy that lacks that symbol renders the shell fine and then dies with
+// "Sk is not a function" on the first data-driven re-render (the 0.1.46
+// console-frozen-on-loading lesson, automated here).
+if (!react.includes('unstable_requestPaint')) {
+  throw new Error("vendor react is missing unstable_requestPaint — re-download the official 18.3.1 UMD (truncated copies break the console)")
+}
+if (!reactDom.includes('unstable_requestPaint')) {
+  throw new Error('vendor react-dom does not reference unstable_requestPaint — version mismatch with react UMD')
+}
+
+
 // split/join, NOT String.replace: minified vendor code contains `$&`-style
 // patterns whose special meaning in a replace() replacement string would
 // corrupt the inlined content (the 0.1.44 bake lesson, guarded below).
