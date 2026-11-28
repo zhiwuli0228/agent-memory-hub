@@ -1,6 +1,6 @@
 {
   "name": "agent-memory-hub",
-  "version": "0.1.43",
+  "version": "0.1.44",
   "description": "Agent memory bridge — local-first, human-approved, file-native long-term memory for AI coding agents (Claude Code, Codex, opencode, gemini, DSH). One local service, every agent shares it.",
   "keywords": [
     "agent-memory",
@@ -45,7 +45,8 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "bake:panel": "node scripts/panel/bake-panel.mjs",
+    "build": "npm run bake:panel && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm run build && npm run test",

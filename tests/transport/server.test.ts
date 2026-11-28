@@ -153,9 +153,11 @@ describe('panel API', () => {
     // Regression: the approveOne alert used '\n' INSIDE the PANEL_HTML template
     // literal; the compiler turned it into a real newline, producing a
     // SyntaxError in the browser and a completely unrendered console.
-    const match = /<script>([\s\S]*?)<\/script>/.exec(PANEL_HTML)
-    expect(match).not.toBeNull()
-    const script = match?.[1] ?? ''
+    // The panel now inlines several scripts (React UMD, react-dom, htm, app) —
+    // validate them together the way the browser would.
+    const scripts = [...PANEL_HTML.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1] ?? '')
+    expect(scripts.length).toBeGreaterThanOrEqual(4)
+    const script = scripts.join('\n')
     // The compiled string must carry the ESCAPE SEQUENCE, not a raw line break.
     expect(script).toContain("'\\n'")
     // Hard proof: the whole inline script parses as JavaScript.
