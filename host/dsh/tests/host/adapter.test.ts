@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { apply, name as adapterName } from '../../src/index.js'
 import { createHubContext, createTools } from '../../src/tools.js'
-import { initHub } from 'agent-memory-hub'
+import { initHub, listProposals } from 'agent-memory-hub'
 import type { HostContext, ToolDefinition } from '../../src/host-types.js'
 
 interface RegisteredHost {
@@ -157,6 +157,30 @@ describe('DSH adapter registration', () => {
     expect(hits.hits).toHaveLength(0)
   })
 
+  it('memory_propose forwards origin/originId so distill output leaves the instant inbox (ADR-0031)', async () => {
+    const root = seededRoot()
+    process.chdir(root)
+    const hubCtx = createHubContext({ root })
+    const tools = createTools(hubCtx)
+    const propose = tools.find((tool) => tool.name === 'memory_propose')!
+    // The schema must advertise the wiring fields, otherwise a skill cannot pass them.
+    const schemaProps = (propose.parameters as { properties: Record<string, unknown> }).properties
+    expect(Object.keys(schemaProps)).toContain('origin')
+    expect(Object.keys(schemaProps)).toContain('originId')
+    await propose.run({
+      type: 'knowledge',
+      title: '蒸馏批次条目',
+      summary: '来自一次定时萃取',
+      body: '正文',
+      sourceRefs: ['note:引文'],
+      origin: 'distill',
+      originId: 'RUN-20261129-0900-abcd',
+    })
+    const pending = listProposals(root)
+    expect(pending[0]?.frontmatter.extra['origin']).toBe('distill')
+    expect(pending[0]?.frontmatter.extra['origin_id']).toBe('RUN-20261129-0900-abcd')
+  })
+
   it('approval reminder: close_task surfaces the pending count + hint', async () => {
     const root = seededRoot()
     process.chdir(root)
@@ -306,3 +330,4 @@ describe('DSH adapter registration', () => {
     expect(legacy.frontmatter).not.toHaveProperty('updated')
   })
 })
+

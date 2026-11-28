@@ -190,6 +190,8 @@ export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (arg
         team: { type: 'string', description: 'Team/domain id to propose into (else the current project workspace layer).' },
         private: { type: 'boolean', description: 'true = write straight into the personal private tier (knowledge-private/, never leaves the hub, no team approval).' },
         supersedes: { type: 'array', items: { type: 'string' }, description: 'Entry id(s) this proposal re-extracts; approval upgrades their version.' },
+        origin: { type: 'string', description: 'Provenance tag. Use "distill" for scheduled-distillation output so the proposal lands in the separate 蒸馏审核 queue instead of the instant inbox.' },
+        originId: { type: 'string', description: 'Origin batch id (the RUN-xxxx id from `memhub distill run start`). Required alongside origin="distill" so the whole batch groups for review and rollback.' },
       },
       required: ['type', 'title', 'summary', 'body'],
     },
@@ -234,6 +236,10 @@ export function createTools(ctx: HubContext): Array<ToolDefinition & { run: (arg
             body: String(args['body']),
             sourceRefs: (args['sourceRefs'] as string[] | undefined) ?? [],
             ...(supersedes !== undefined && supersedes.length > 0 ? { supersedes } : {}),
+            // ADR-0031: keep scheduled-distillation output out of the instant
+            // inbox — the two review queues have different contexts.
+            ...(typeof args['origin'] === 'string' && args['origin'] !== '' ? { origin: args['origin'] } : {}),
+            ...(typeof args['originId'] === 'string' && args['originId'] !== '' ? { originId: args['originId'] } : {}),
             actor: 'model',
           },
           {
