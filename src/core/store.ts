@@ -485,6 +485,32 @@ export type CommitProposalResult =
     }
   | { disputed?: false; knowledgeId: string; version: number; path: string; superseded?: string }
 
+/**
+ * Surgically rewrite ONE frontmatter field, leaving every other byte alone.
+ *
+ * Why not parse+render: hubs migrated from the predecessor (dsh-memory-hub)
+ * carry keys this schema does not model (`related`, `supersedes`,
+ * `promoted_from`, `applies_to`, `created_at`…) and shorthand forms such as
+ * `scope: project:foo`. Re-serializing the whole frontmatter normalizes those
+ * away — `source_refs` block lists collapse into one long string and unknown
+ * keys are re-emitted as empty arrays. A status flip must not rewrite anything
+ * it was not asked to touch, so we patch the single line in place.
+ */
+function patchFrontmatterLine(path: string, field: string, value: string): void {
+  const raw = readFileSync(path, 'utf8')
+  const eol = raw.includes('\r\n') ? '\r\n' : '\n'
+  const m = /^(---\r?\n)([\s\S]*?)(\r?\n---)/.exec(raw)
+  if (m === null) throw new HubError(ErrorCode.E_VALIDATION, `entry has no frontmatter: ${path}`, { path })
+  const head = m[1] ?? '---\n'
+  const fm = m[2] ?? ''
+  const tail = raw.slice((m[0] ?? '').length)
+  const close = m[3] ?? '\n---'
+  const line = `${field}: ${value}`
+  const existing = new RegExp(`^${field}:.*$`, 'm')
+  const nextFm = existing.test(fm) ? fm.replace(existing, line) : `${fm}${eol}${line}`
+  atomicWrite(path, `${head}${nextFm}${close}${tail}`)
+}
+
 /** Soft-remove: status=deprecated + ledger record. Physical delete is explicit-only. */
 export function deprecateEntry(
   root: string,
@@ -497,8 +523,7 @@ export function deprecateEntry(
 ): void {
   const entry = getEntry(root, id)
   const ts = helpers.nowIsoValue ?? nowIso()
-  const fm: KnowledgeFrontmatter = { ...entry.frontmatter, status: 'deprecated', updated: ts }
-  atomicWrite(entry.path, renderKnowledgeMarkdown(fm, entry.body))
+  patchFrontmatterLine(entry.path, 'status', 'deprecated')
   helpers.appendLedger(root, {
     ts,
     actor: 'human',
@@ -521,8 +546,7 @@ export function restoreEntry(
 ): void {
   const entry = getEntry(root, id)
   const ts = helpers.nowIsoValue ?? nowIso()
-  const fm: KnowledgeFrontmatter = { ...entry.frontmatter, status: 'accepted', updated: ts }
-  atomicWrite(entry.path, renderKnowledgeMarkdown(fm, entry.body))
+  patchFrontmatterLine(entry.path, 'status', 'accepted')
   helpers.appendLedger(root, {
     ts,
     actor: 'human',

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -252,8 +252,58 @@ describe('panel API', () => {
       expect((list.body as { entries: Array<{ status: string }> }).entries[0]?.status).toBe('deprecated')
     })
 
-    it('restore undoes a deprecation (status back to accepted, ledger records it)', () => {
+    it('deprecate/restore flip ONLY the status line — legacy frontmatter survives byte-for-byte', () => {
+      // Regression: deprecate/restore used to re-serialize the whole frontmatter,
+      // which destroyed predecessor-format hubs (unknown keys became empty
+      // arrays, source_refs block lists collapsed into one string). A status
+      // flip must not rewrite anything else.
       const { state, root } = seededState()
+      const id = propose(root, 'knowledge', '旧格式条目')
+      handleApi(state, 'POST', `/api/inbox/${id}/approve`)
+      const committed = (handleApi(state, 'GET', '/api/entries').body as { entries: Array<{ id: string; path: string }> }).entries[0]
+      const path = committed?.path ?? ''
+
+      // Rewrite it into a predecessor-shaped file full of keys this schema
+      // does not model, exactly like a migrated hub.
+      const legacy = [
+        '---',
+        `id: ${committed?.id}`,
+        'type: knowledge',
+        'scope: project:legacy-ws',
+        'status: accepted',
+        'version: 1',
+        'title: 旧格式条目',
+        'summary: legacy summary',
+        'tags:',
+        '  - legacy-a',
+        '  - legacy-b',
+        'source_refs:',
+        '  - file:src/legacy.ts',
+        '  - "note: 迁移前的备注"',
+        'related:',
+        '  - DEC-000001',
+        'supersedes:',
+        '  - KNO-000001',
+        'promoted_from: null',
+        'applies_to: ',
+        'created_at: 2026-11-01T04:36:21.104Z',
+        '---',
+        '',
+        'legacy body line 1',
+        'legacy body line 2',
+        '',
+      ].join('\n')
+      writeFileSync(path, legacy, 'utf8')
+
+      handleApi(state, 'POST', `/api/entries/${committed?.id}/deprecate`, { reason: 'x' })
+      const afterDeprecate = readFileSync(path, 'utf8')
+      expect(afterDeprecate).toBe(legacy.replace('status: accepted', 'status: deprecated'))
+
+      handleApi(state, 'POST', `/api/entries/${committed?.id}/restore`, { reason: 'y' })
+      expect(readFileSync(path, 'utf8')).toBe(legacy)
+    })
+
+    it('restore undoes a deprecation (status back to accepted, ledger records it)', () => {      const { state, root } = seededState()
       const id = propose(root, 'knowledge', '废弃后可恢复')
       handleApi(state, 'POST', `/api/inbox/${id}/approve`)
       const committed = (handleApi(state, 'GET', '/api/entries').body as { entries: Array<{ id: string }> }).entries[0]?.id
