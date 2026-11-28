@@ -62,6 +62,12 @@ export interface AdapterConfig {
    * ours and keeps the existing one; 'suffix' renames ours to `<name>__amh`.
    */
   toolConflict?: 'skip' | 'suffix'
+  /**
+   * Panel HTTP port (ADR-0012). Defaults to 7777, or $DSH_AMH_PANEL_PORT.
+   * Multiple DSH profiles (e.g. desktop + web on the same machine) must not
+   * share the port — configure a distinct value per profile.
+   */
+  panelPort?: number
 }
 
 export function resolveHubRoot(config?: AdapterConfig): string {
