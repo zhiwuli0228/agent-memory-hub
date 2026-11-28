@@ -90,16 +90,9 @@
   .grade.batch { background: rgba(63, 185, 80, .12); color: var(--batch); border: 1px solid rgba(63, 185, 80, .3); }
   .pill { border-radius: 999px; padding: 1px 8px; font-size: 11px; background: var(--panel-2); color: var(--text-dim); border: 1px solid var(--border-soft); }
   .pill.type { color: var(--brand-2); border-color: rgba(77, 124, 255, .35); background: rgba(77, 124, 255, .1); }
-  .pill.domain { color: var(--warn); border-color: rgba(210, 153, 34, .35); background: rgba(210, 153, 34, .08); }
   .pill.deprecated { color: #e3b98e; border-color: rgba(227, 185, 142, .35); background: rgba(227, 185, 142, .08); }
   .pill.status-deprecated { color: #e3b98e; border-color: rgba(227, 185, 142, .4); background: rgba(227, 185, 142, .1); }
   .summary { color: var(--text-dim); font-size: 13px; line-height: 1.55; margin: 2px 0 4px; }
-  .domain-head {
-    display: flex; align-items: baseline; gap: 10px; margin: 22px 0 4px;
-    color: var(--text-dim); font-size: 12.5px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase;
-  }
-  .domain-head::before { content: ""; width: 10px; height: 10px; border-radius: 3px; background: var(--brand); opacity: .7; }
-  .domain-head { display: none; }
   /* 二级菜单：一级页签之下的类型分类 */
   .subnav {
     display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
@@ -267,7 +260,7 @@ function ErrorCard({ title, detail, onRetry }) {
     </div>`;
 }
 
-// ---- second-level menu: type categories ----------------------------------
+// ---- 类型标签（三级筛选，不再作为二级菜单）--------------------------------
 const TYPE_LABELS = {
   decision: '决策',
   constraint: '约束',
@@ -279,8 +272,6 @@ const TYPE_LABELS = {
   playbooks: '操作手册',
   assets: '资产',
 };
-// Stable display order: known types first (canonical order), then any other
-// type alphabetically, then the untyped bucket last.
 const TYPE_ORDER = ['decision', 'constraint', 'knowledge', 'process', 'api-catalog', 'runtime-base', 'open-questions', 'playbooks', 'assets'];
 function typeOf(item) {
   return item.type === null || item.type === undefined || item.type === '' ? '__none__' : item.type;
@@ -301,20 +292,31 @@ function typeBuckets(items) {
   if (counts.has('__none__')) keys.push('__none__');
   return keys.map((k) => ({ key: k, label: typeLabel(k), count: counts.get(k) }));
 }
-/**
- * 二级菜单：全部 + 各类型分类。一级页签（待审核 / 记忆库）决定数据源，
- * 这里只决定看哪一类；选中项有独立计数，不做"堆在一页"的分区渲染。
- */
-function TypeNav({ buckets, active, total, onPick }) {
+
+// ---- 二级菜单：状态 -------------------------------------------------------
+// 一级页签「记忆库」决定看哪个库，二级菜单按状态分。状态集合以落库数据为准：
+// 已知状态给出中文名与固定顺序，出现未知状态时自动追加，绝不静默隐藏数据。
+// 本项目没有「域」概念，域相关筛选已移除。
+const STATUS_LABELS = {
+  all: '全部',
+  pending: '待审核',
+  accepted: '已审核',
+  superseded: '已取代',
+  deprecated: '已废弃',
+  rejected: '已拒绝',
+  candidate: '候选',
+};
+const STATUS_ORDER = ['all', 'pending', 'accepted', 'superseded', 'deprecated', 'rejected', 'candidate'];
+function StatusNav({ active, counts, onPick }) {
+  // 只展示有数据的桶（全部除外），并保持固定顺序；未知状态按字母序追加。
+  const keys = STATUS_ORDER.filter((k) => k === 'all' || counts[k] > 0);
+  const extra = Object.keys(counts).filter((k) => k !== 'all' && !STATUS_ORDER.includes(k) && counts[k] > 0).sort();
   return html`
     <div className="subnav">
-      <span className="navlbl">类型</span>
-      <button className=${'subitem ' + (active === 'all' ? 'active' : '')} onClick=${() => onPick('all')}>
-        全部<span className="n">${total}</span>
-      </button>
-      ${buckets.map((b) => html`
-        <button key=${b.key} className=${'subitem ' + (active === b.key ? 'active' : '')} onClick=${() => onPick(b.key)}>
-          ${b.label}<span className="n">${b.count}</span>
+      <span className="navlbl">状态</span>
+      ${[...keys, ...extra].map((k) => html`
+        <button key=${k} className=${'subitem ' + (active === k ? 'active' : '')} onClick=${() => onPick(k)}>
+          ${STATUS_LABELS[k] ?? k}<span className="n">${counts[k] ?? 0}</span>
         </button>`)}
     </div>`;
 }
@@ -322,30 +324,21 @@ function Crumb({ parent, label }) {
   return html`<div className="crumb">${parent} / <b>${label}</b></div>`;
 }
 
-// ---- inbox ---------------------------------------------------------------
-function InboxPane({ navCount }) {
-  const [state, setState] = useState({ loading: true, err: null, proposals: [], groups: {}, status: null });
-  const [selected, setSelected] = useState(() => new Set());
-  const [domainFilter, setDomainFilter] = useState('all');
+// ---- 记忆库（待审核 + 已审核 + 已废弃 合并在一个分层视图里）----------------
+function MemoryPane({ navCount }) {
+  const [q, setQ] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+  const [pending, setPending] = useState([]); // 待审核提案
+  const [entries, setEntries] = useState([]); // 已落库条目（accepted / deprecated）
+  const [statusFilter, setStatusFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
-
-  const refresh = useCallback(async () => {
-    setState((s) => ({ ...s, loading: true }));
-    const [ib, st] = await Promise.all([j('/api/inbox'), j('/api/status')]);
-    if (!ib.ok) {
-      setState({ loading: false, err: { title: '收件箱加载失败', detail: ib.data?.error ?? ('HTTP ' + ib.status) }, proposals: [], groups: {}, status: null });
-      return;
-    }
-    setState({ loading: false, err: null, proposals: ib.data.proposals ?? [], groups: ib.data.groups ?? {}, status: st.ok ? st.data : null });
-    // Drop selections that no longer exist (approved/rejected elsewhere).
-    setSelected((prev) => {
-      const live = new Set((ib.data.proposals ?? []).map((p) => p.id));
-      const next = new Set([...prev].filter((id) => live.has(id)));
-      return next.size === prev.size ? prev : next;
-    });
-  }, []);
-  useEffect(() => { refresh(); }, [refresh]);
-  useEffect(() => { if (navCount !== null && navCount !== undefined) navCount(state.proposals.length); }, [state.proposals.length]);
+  const [selected, setSelected] = useState(() => new Set());
+  const [detail, setDetail] = useState(null); // { id, frontmatter, body, path }
+  const [editing, setEditing] = useState(false);
+  const [summary, setSummary] = useState('');
+  const [body, setBody] = useState('');
+  const [reason, setReason] = useState('');
 
   const toast = (msg, kind) => {
     const el = document.createElement('div');
@@ -354,6 +347,28 @@ function InboxPane({ navCount }) {
     document.body.appendChild(el);
     setTimeout(() => el.remove(), 3600);
   };
+
+  const refresh = useCallback(async () => {
+    setLoading(true); setErr(null);
+    const [ib, en] = await Promise.all([j('/api/inbox'), j('/api/entries')]);
+    if (!ib.ok && !en.ok) {
+      setErr({ title: '记忆库加载失败', detail: ib.data?.error ?? en.data?.error ?? ('HTTP ' + ib.status) });
+      setLoading(false);
+      return;
+    }
+    const proposals = ib.ok ? (ib.data.proposals ?? []) : [];
+    setPending(proposals);
+    setEntries(en.ok ? (en.data.entries ?? []) : []);
+    setLoading(false);
+    // 已不存在的选中项（已被批准/拒绝）自动剔除
+    setSelected((prev) => {
+      const live = new Set(proposals.map((p) => p.id));
+      const next = new Set([...prev].filter((id) => live.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { if (navCount) navCount(pending.length); }, [pending.length]);
 
   const approveOne = async (id) => {
     const r = await j('/api/inbox/' + id + '/approve', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
@@ -370,24 +385,12 @@ function InboxPane({ navCount }) {
     refresh();
   };
 
-  // Explicit selection only — nothing is ever batch-approved implicitly.
+  // 只批用户显式勾选的条目，绝不隐式批量
   const toggle = (id) => setSelected((prev) => {
     const next = new Set(prev);
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
-  const inDomain = state.proposals.filter((p) => domainFilter === 'all' || p.domain === domainFilter);
-  const navBuckets = typeBuckets(inDomain);
-  const visible = typeFilter === 'all' ? inDomain : inDomain.filter((p) => typeOf(p) === typeFilter);
-  const allVisibleSelected = visible.length > 0 && visible.every((p) => selected.has(p.id));
-  const toggleSelectAll = () => {
-    if (allVisibleSelected) setSelected((prev) => {
-      const next = new Set(prev);
-      for (const p of visible) next.delete(p.id);
-      return next;
-    });
-    else setSelected((prev) => { const next = new Set(prev); for (const p of visible) next.add(p.id); return next; });
-  };
   const approveSelected = async () => {
     const ids = [...selected];
     if (ids.length === 0) { toast('请先勾选要批准的条目', 'err'); return; }
@@ -397,100 +400,12 @@ function InboxPane({ navCount }) {
     refresh();
   };
 
-  if (state.loading) return html`<${Loading} />`;
-  if (state.err) return html`<${ErrorCard} title=${state.err.title} detail=${state.err.detail} onRetry=${refresh} />`;
-
-  const domains = Object.keys(state.groups);
-  const individualPicked = state.proposals.filter((p) => selected.has(p.id) && p.grade === 'individual').length;
-  const activeLabel = typeFilter === 'all' ? '全部类型' : typeLabel(typeFilter);
-
-  return html`
-    <div>
-      ${state.proposals.length === 0 ? html`<${Empty} icon="✓" text="待审核已清空，无待审条目" />` : html`
-        <div className="statline">
-          <span>待审 <b>${state.proposals.length}</b></span>
-          <span>当前视图 <b>${visible.length}</b></span>
-          <span>已选 <b>${selected.size}</b></span>
-          <span>域 <b>${domains.length}</b></span>
-        </div>
-
-        <div className="chiprow">
-          <span className="lbl">域</span>
-          <button className=${'chip ' + (domainFilter === 'all' ? 'active' : '')} onClick=${() => setDomainFilter('all')}>全部<span className="n">${state.proposals.length}</span></button>
-          ${domains.map((d) => html`<button key=${d} className=${'chip ' + (domainFilter === d ? 'active' : '')} onClick=${() => setDomainFilter(d)}>${d}<span className="n">${state.groups[d]}</span></button>`)}
-        </div>
-
-        <${TypeNav} buckets=${navBuckets} active=${typeFilter} total=${inDomain.length} onPick=${setTypeFilter} />
-        <${Crumb} parent="待审核" label=${activeLabel} />
-
-        <div className="batchbar">
-          <label style=${{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-dim)', cursor: 'pointer' }}>
-            <input type="checkbox" className="pick" checked=${allVisibleSelected} onChange=${toggleSelectAll} />
-            全选当前视图（${visible.length}）
-          </label>
-          <span className="selinfo">已选 <b>${selected.size}</b> 条${individualPicked > 0 ? ' · 其中逐条级 ' + individualPicked + ' 条' : ''}</span>
-          <button className="primary" onClick=${approveSelected} disabled=${selected.size === 0}>批量批准选中的 ${selected.size} 条</button>
-          <button className="ghost" onClick=${() => setSelected(new Set())} disabled=${selected.size === 0}>清除选择</button>
-        </div>
-
-        ${visible.length === 0 ? html`<${Empty} icon="🔎" text="该分类下没有条待审条目" />` : visible.map((p) => html`
-              <div className=${'card ' + (selected.has(p.id) ? 'selected' : '')} key=${p.id}>
-                <div className="head">
-                  <input type="checkbox" className="pick" checked=${selected.has(p.id)} onChange=${() => toggle(p.id)} title="勾选后可批量批准" />
-                  <div className="body">
-                    <h3>${p.title}</h3>
-                    <div className="meta">
-                      <span className="pill">${p.id}</span>
-                      <span className="pill type">${typeLabel(typeOf(p))}</span>
-                      <${GradeBadge} grade=${p.grade} />
-                      ${p.tags && p.tags.length ? p.tags.map((t) => html`<span className="pill" key=${t}>#${t}</span>`) : null}
-                    </div>
-                    ${p.summary ? html`<div className="summary">${p.summary}</div>` : null}
-                    <div className="row">
-                      <button className="primary" onClick=${() => approveOne(p.id)}>批准</button>
-                      <button className="danger" onClick=${() => rejectOne(p.id)}>拒绝</button>
-                    </div>
-                  </div>
-                </div>
-              </div>`)}
-      `}
-    </div>`;
-}
-
-// ---- entries -------------------------------------------------------------
-function EntriesPane() {
-  const [q, setQ] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
-  const [entries, setEntries] = useState(null);
-  const [detail, setDetail] = useState(null); // { id, frontmatter, body, path }
-  const [editing, setEditing] = useState(false);
-  const [summary, setSummary] = useState('');
-  const [body, setBody] = useState('');
-  const [reason, setReason] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [typeFilter, setTypeFilter] = useState('all');
-
-  const toast = (msg, kind) => {
-    const el = document.createElement('div');
-    el.className = 'toast ' + (kind === 'err' ? 'err' : 'ok');
-    el.textContent = msg;
-    document.body.appendChild(el);
-    setTimeout(() => el.remove(), 3600);
-  };
-
   const doSearch = async () => {
+    if (!q.trim()) { refresh(); return; }
     setLoading(true); setErr(null); setDetail(null);
-    const r = await j('/api/search?q=' + encodeURIComponent(q || ' '));
-    if (!r.ok) { setErr({ title: '搜索失败', detail: r.data?.error ?? ('HTTP ' + r.status) }); setEntries([]); setLoading(false); return; }
+    const r = await j('/api/search?q=' + encodeURIComponent(q.trim()));
+    if (!r.ok) { setErr({ title: '搜索失败', detail: r.data?.error ?? ('HTTP ' + r.status) }); setLoading(false); return; }
     setEntries(r.data.hits.map((h) => ({ id: h.id, title: h.title, type: h.type, status: h.status, version: h.version })));
-    setLoading(false);
-  };
-  const loadAll = async () => {
-    setLoading(true); setErr(null); setDetail(null);
-    const r = await j('/api/entries');
-    if (!r.ok) { setErr({ title: '加载失败', detail: r.data?.error ?? ('HTTP ' + r.status) }); setEntries([]); setLoading(false); return; }
-    setEntries(r.data.entries ?? []);
     setLoading(false);
   };
   const openEntry = async (id) => {
@@ -504,16 +419,17 @@ function EntriesPane() {
     const r = await j('/api/entries/' + encodeURIComponent(detail.id) + '/update', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ summary, body }) });
     if (!r.ok) { toast('保存失败：' + (r.data?.error ?? ('HTTP ' + r.status)), 'err'); return; }
     toast('已保存 ' + detail.id + ' → v' + (r.data.version ?? '?'), 'ok');
+    setEditing(false);
+    refresh();
     openEntry(detail.id);
-    loadAll();
   };
   const deprecateEntry = async () => {
     if (!reason.trim()) { toast('请填写废弃原因', 'err'); return; }
     const r = await j('/api/entries/' + encodeURIComponent(detail.id) + '/deprecate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }) });
     if (!r.ok) { toast('废弃失败：' + (r.data?.error ?? ('HTTP ' + r.status)), 'err'); return; }
     toast('已废弃 ' + detail.id, 'ok');
+    refresh();
     openEntry(detail.id);
-    loadAll();
   };
   const hardDelete = async () => {
     if (!window.confirm('永久删除 ' + detail.id + ' 不可恢复，确认？')) return;
@@ -522,14 +438,38 @@ function EntriesPane() {
     if (!r.ok) { toast('删除失败：' + (r.data?.error ?? ('HTTP ' + r.status)), 'err'); return; }
     toast('已永久删除 ' + detail.id + '（账本留痕）', 'ok');
     setDetail(null); setEditing(false);
-    loadAll();
+    refresh();
   };
 
-  useEffect(() => { if (entries === null) loadAll(); }, []);
+  const pendingItems = pending.map((p) => ({ ...p, kind: 'pending' }));
+  const entryItems = entries.map((e) => ({ ...e, kind: 'entry' }));
+  const counts = { all: pendingItems.length + entryItems.length, pending: pendingItems.length };
+  for (const e of entryItems) {
+    const s = e.status ?? 'accepted';
+    counts[s] = (counts[s] ?? 0) + 1;
+  }
+  let statusItems;
+  if (statusFilter === 'pending') statusItems = pendingItems;
+  else if (statusFilter === 'all') statusItems = [...pendingItems, ...entryItems];
+  else statusItems = entryItems.filter((e) => (e.status ?? 'accepted') === statusFilter);
 
-  const statusFiltered = (entries ?? []).filter((e) => statusFilter === 'all' || e.status === statusFilter);
-  const navBuckets = typeBuckets(statusFiltered);
-  const visible = typeFilter === 'all' ? statusFiltered : statusFiltered.filter((e) => typeOf(e) === typeFilter);
+  const buckets = typeBuckets(statusItems);
+  const visible = typeFilter === 'all' ? statusItems : statusItems.filter((it) => typeOf(it) === typeFilter);
+  const visiblePending = visible.filter((it) => it.kind === 'pending');
+  const allPendingSelected = visiblePending.length > 0 && visiblePending.every((p) => selected.has(p.id));
+  const toggleSelectAll = () => {
+    if (allPendingSelected) {
+      setSelected((prev) => { const next = new Set(prev); for (const p of visiblePending) next.delete(p.id); return next; });
+    } else {
+      setSelected((prev) => { const next = new Set(prev); for (const p of visiblePending) next.add(p.id); return next; });
+    }
+  };
+  const individualPicked = pendingItems.filter((p) => selected.has(p.id) && p.grade === 'individual').length;
+  const statusLabel = STATUS_LABELS[statusFilter] ?? statusFilter;
+  const activeCrumb = typeFilter === 'all' ? statusLabel : statusLabel + ' · ' + typeLabel(typeFilter);
+
+  if (loading && pending.length === 0 && entries.length === 0) return html`<${Loading} />`;
+  if (err) return html`<${ErrorCard} title=${err.title} detail=${err.detail} onRetry=${refresh} />`;
 
   return html`
     <div>
@@ -537,27 +477,57 @@ function EntriesPane() {
         <input type="text" className="grow" placeholder="BM25 检索记忆库…（Enter 搜索）" value=${q}
           onChange=${(e) => setQ(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter') doSearch(); }} />
         <button onClick=${doSearch}>搜索</button>
-        <button onClick=${loadAll}>全部</button>
+        <button onClick=${refresh}>刷新</button>
       </div>
-      ${(entries ?? []).length > 0 ? html`
+
+      <${StatusNav} active=${statusFilter} counts=${counts} onPick=${setStatusFilter} />
+      <${Crumb} parent="记忆库" label=${activeCrumb} />
+
+      ${buckets.length > 1 ? html`
         <div className="chiprow">
-          <span className="lbl">状态</span>
-          <button className=${'chip ' + (statusFilter === 'all' ? 'active' : '')} onClick=${() => setStatusFilter('all')}>全部<span className="n">${entries.length}</span></button>
-          <button className=${'chip ' + (statusFilter === 'accepted' ? 'active' : '')} onClick=${() => setStatusFilter('accepted')}>已接受<span className="n">${entries.filter((e) => e.status === 'accepted').length}</span></button>
-          <button className=${'chip ' + (statusFilter === 'deprecated' ? 'active' : '')} onClick=${() => setStatusFilter('deprecated')}>已废弃<span className="n">${entries.filter((e) => e.status === 'deprecated').length}</span></button>
-        </div>
-        <${TypeNav} buckets=${navBuckets} active=${typeFilter} total=${statusFiltered.length} onPick=${setTypeFilter} />
-        <${Crumb} parent="记忆库" label=${typeFilter === 'all' ? '全部类型' : typeLabel(typeFilter)} />` : null}
-      ${loading ? html`<${Loading} />` : err ? html`<${ErrorCard} title=${err.title} detail=${err.detail} onRetry=${loadAll} />` : html`
-        <div>
-          ${entries === null ? null : visible.length === 0 ? html`<${Empty} icon="🔎" text="没有命中条目" />` : visible.map((e) => html`
-                <div className="entryline" key=${e.id} onClick=${() => openEntry(e.id)}>
-                  <span className="id">${e.id}@v${e.version ?? '?'}</span>
-                  <span className="title">${e.title}</span>
-                  ${e.status === 'deprecated' ? html`<span className="pill status-deprecated">已废弃</span>` : null}
-                  <span className="pill type">${typeLabel(typeOf(e))}</span>
-                </div>`)}
-        </div>`}
+          <span className="lbl">类型</span>
+          <button className=${'chip ' + (typeFilter === 'all' ? 'active' : '')} onClick=${() => setTypeFilter('all')}>全部<span className="n">${statusItems.length}</span></button>
+          ${buckets.map((b) => html`<button key=${b.key} className=${'chip ' + (typeFilter === b.key ? 'active' : '')} onClick=${() => setTypeFilter(b.key)}>${b.label}<span className="n">${b.count}</span></button>`)}
+        </div>` : null}
+
+      ${visiblePending.length > 0 ? html`
+        <div className="batchbar">
+          <label style=${{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-dim)', cursor: 'pointer' }}>
+            <input type="checkbox" className="pick" checked=${allPendingSelected} onChange=${toggleSelectAll} />
+            全选当前视图（${visiblePending.length}）
+          </label>
+          <span className="selinfo">已选 <b>${selected.size}</b> 条${individualPicked > 0 ? ' · 其中逐条级 ' + individualPicked + ' 条' : ''}</span>
+          <button className="primary" onClick=${approveSelected} disabled=${selected.size === 0}>批量批准选中的 ${selected.size} 条</button>
+          <button className="ghost" onClick=${() => setSelected(new Set())} disabled=${selected.size === 0}>清除选择</button>
+        </div>` : null}
+
+      ${visible.length === 0 ? html`<${Empty} icon="🔎" text=${statusFilter === 'pending' ? '没有待审核条目' : '该状态下没有条目'} />` : visible.map((it) => it.kind === 'pending' ? html`
+        <div className=${'card ' + (selected.has(it.id) ? 'selected' : '')} key=${it.id}>
+          <div className="head">
+            <input type="checkbox" className="pick" checked=${selected.has(it.id)} onChange=${() => toggle(it.id)} title="勾选后可批量批准" />
+            <div className="body">
+              <h3>${it.title}</h3>
+              <div className="meta">
+                <span className="pill">${it.id}</span>
+                <span className="pill type">${typeLabel(typeOf(it))}</span>
+                <${GradeBadge} grade=${it.grade} />
+                ${it.tags && it.tags.length ? it.tags.map((t) => html`<span className="pill" key=${t}>#${t}</span>`) : null}
+              </div>
+              ${it.summary ? html`<div className="summary">${it.summary}</div>` : null}
+              <div className="row">
+                <button className="primary" onClick=${() => approveOne(it.id)}>批准</button>
+                <button className="danger" onClick=${() => rejectOne(it.id)}>拒绝</button>
+              </div>
+            </div>
+          </div>
+        </div>` : html`
+        <div className="entryline" key=${it.id} onClick=${() => openEntry(it.id)}>
+          <span className="id">${it.id}@v${it.version ?? '?'}</span>
+          <span className="title">${it.title}</span>
+          ${it.status === 'deprecated' ? html`<span className="pill status-deprecated">已废弃</span>` : null}
+          <span className="pill type">${typeLabel(typeOf(it))}</span>
+        </div>`)}
+
       ${detail ? html`
         <div className="card detail" style=${{ marginTop: 18 }}>
           ${editing ? html`
@@ -573,8 +543,7 @@ function EntriesPane() {
             <h3>${detail.frontmatter.title} <span className="pill">${detail.frontmatter.status ?? ''}</span></h3>
             <div className="meta">
               <span className="pill">${detail.frontmatter.id}@v${detail.frontmatter.version}</span>
-              <span className="pill type">${detail.frontmatter.type}</span>
-              <span className="pill">${JSON.stringify(detail.frontmatter.scope ?? {})}</span>
+              <span className="pill type">${typeLabel(typeOf(detail.frontmatter))}</span>
               ${(detail.frontmatter.tags ?? []).map((t) => html`<span className="pill" key=${t}>#${t}</span>`)}
             </div>
             <div className="path">path: ${detail.path}</div>
@@ -628,7 +597,7 @@ function AuditPane() {
 
 // ---- app shell -----------------------------------------------------------
 function App() {
-  const [tab, setTab] = useState('inbox');
+  const [tab, setTab] = useState('library');
   const [pendingCount, setPendingCount] = useState(null);
   const [status, setStatus] = useState(null);
 
@@ -655,15 +624,13 @@ function App() {
         <div className="status" title=${statusText}>${statusText}</div>
       </header>
       <nav>
-        <button className=${tab === 'inbox' ? 'active' : ''} onClick=${() => setTab('inbox')}>
-          待审核 ${pendingCount !== null && pendingCount > 0 ? html`<span className="count">${pendingCount}</span>` : null}
+        <button className=${tab === 'library' ? 'active' : ''} onClick=${() => setTab('library')}>
+          记忆库 ${pendingCount !== null && pendingCount > 0 ? html`<span className="count">${pendingCount}</span>` : null}
         </button>
-        <button className=${tab === 'entries' ? 'active' : ''} onClick=${() => setTab('entries')}>记忆库</button>
         <button className=${tab === 'audit' ? 'active' : ''} onClick=${() => setTab('audit')}>审计</button>
       </nav>
       <main>
-        <div className=${'tabpane ' + (tab === 'inbox' ? 'active' : '')}><${InboxPane} navCount=${setPendingCount} /></div>
-        <div className=${'tabpane ' + (tab === 'entries' ? 'active' : '')}><${EntriesPane} /></div>
+        <div className=${'tabpane ' + (tab === 'library' ? 'active' : '')}><${MemoryPane} navCount=${setPendingCount} /></div>
         <div className=${'tabpane ' + (tab === 'audit' ? 'active' : '')}><${AuditPane} /></div>
       </main>
     </div>`;

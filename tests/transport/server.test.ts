@@ -149,23 +149,29 @@ describe('panel API', () => {
     expect(PANEL_HTML).toContain('/api/journal')
   })
 
-  it('panel exposes the two-level menu — 待审核/记忆库 as level 1, type categories as level 2', () => {
-    // Level 1: the label the user asked for, plus the other two panes.
-    expect(PANEL_HTML).toContain('待审核')
+  it('panel exposes the two-level menu — level 1 tabs, level 2 status filters (no domain concept)', () => {
+    // Level 1: the two panes.
     expect(PANEL_HTML).toContain('记忆库')
     expect(PANEL_HTML).toContain('审计')
-    // Level 2: a dedicated nav (不是把分类堆在一页的分区标题) with an 全部 entry.
+    // Level 2: status partition — 待审核 / 已审核 / 已废弃, not type categories.
+    expect(PANEL_HTML).toContain('待审核')
+    expect(PANEL_HTML).toContain('已审核')
+    expect(PANEL_HTML).toContain('已废弃')
     expect(PANEL_HTML).toContain('className="subnav"')
-    expect(PANEL_HTML).toContain("'subitem '")
+    expect(PANEL_HTML).toContain('StatusNav')
     expect(PANEL_HTML).toContain('navlbl')
-    expect(PANEL_HTML).toContain('全部类型')
-    // Type labels stay Chinese so the second level is readable.
-    for (const label of ['决策', '约束', '知识', '流程', 'API 目录', '运行时基线', '操作手册']) {
-      expect(PANEL_HTML).toContain(label)
-    }
-    // The 0.1.48 stacked-section layout must be gone: no per-type section heads.
+    // Type stays as a third-level filter row, never as the level-2 menu.
+    expect(PANEL_HTML).toContain('className="chiprow"')
+    expect(PANEL_HTML).toContain('未分类型')
+    // This project has no 域/domain concept — no domain UI may come back.
+    expect(PANEL_HTML).not.toContain('domainFilter')
+    expect(PANEL_HTML).not.toContain('.domain-head')
+    expect(PANEL_HTML).not.toContain('>域<')
+    // The 0.1.48/0.1.49 stacked-section and TypeNav layouts must be gone.
     expect(PANEL_HTML).not.toContain('className="section-head"')
-    expect(PANEL_HTML).not.toContain('function SectionHead')
+    expect(PANEL_HTML).not.toContain('function TypeNav')
+    expect(PANEL_HTML).not.toContain('function InboxPane')
+    expect(PANEL_HTML).not.toContain('function EntriesPane')
   })
 
   it('panel <script> is valid JavaScript — a stray real newline inside a string literal breaks the whole console', () => {
