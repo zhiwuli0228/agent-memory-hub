@@ -141,7 +141,7 @@ async function refreshInbox() {
 }
 async function approveOne(id) {
   const r = await j('/api/inbox/' + id + '/approve', { method: 'POST', headers: {'content-type':'application/json'}, body: '{}' });
-  if (!r.ok) { alert('批准失败：' + esc(r.data?.error ?? ('HTTP ' + r.status)) + (r.data?.hint || r.data?.details?.hint ? '\n' + esc(r.data?.hint || r.data?.details?.hint) : '')); }
+  if (!r.ok) { alert('批准失败：' + esc(r.data?.error ?? ('HTTP ' + r.status)) + (r.data?.hint || r.data?.details?.hint ? '\\n' + esc(r.data?.hint || r.data?.details?.hint) : '')); }
   refreshInbox();
 }
 async function rejectOne(id) {

@@ -149,6 +149,26 @@ describe('panel API', () => {
     expect(PANEL_HTML).toContain('/api/journal')
   })
 
+  it('panel <script> is valid JavaScript — a stray real newline inside a string literal breaks the whole console', () => {
+    // Regression: the approveOne alert used '\n' INSIDE the PANEL_HTML template
+    // literal; the compiler turned it into a real newline, producing a
+    // SyntaxError in the browser and a completely unrendered console.
+    const match = /<script>([\s\S]*?)<\/script>/.exec(PANEL_HTML)
+    expect(match).not.toBeNull()
+    const script = match?.[1] ?? ''
+    // The compiled string must carry the ESCAPE SEQUENCE, not a raw line break.
+    expect(script).toContain("'\\n'")
+    // Hard proof: the whole inline script parses as JavaScript.
+    expect(() => {
+      // eslint-disable-next-line no-new-func
+      new Function(script)
+    }).not.toThrow()
+    // The approve alert must carry the escape sequence, not a raw line break.
+    const alertLine = script.split('\n').find((l) => l.includes('批准失败'))
+    expect(alertLine).not.toBeUndefined()
+    expect(alertLine).toContain("'\\n'")
+  })
+
   describe('console management routes (ADR-0010)', () => {
     it('entries lists accepted entries with metadata; detail returns frontmatter + body', () => {
       const { state, root } = seededState()
